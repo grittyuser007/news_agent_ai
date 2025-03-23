@@ -1,0 +1,7 @@
+chromium
+chromium-driver
+ffmpeg
+libsm6
+libxext6
+python3-dev
+build-essential
