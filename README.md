@@ -5,6 +5,7 @@ emoji: 🚀
 colorFrom: red
 colorTo: blue
 short_description: 'ai based summarizer for news '
+sdk: streamlit
 ---
 # News Analyzer Pro - Setup and Usage Instruction
 
