@@ -19,7 +19,14 @@ logger.info(f"Running in Hugging Face Spaces: {is_huggingface}")
 if is_huggingface:
     # Run Hugging Face setup
     logger.info("Running Hugging Face setup")
-    import huggingface_setup
+    try:
+        # Explicitly run setup functions
+        import huggingface_setup
+        huggingface_setup.setup_virtual_display()
+        huggingface_setup.check_chromium()
+        huggingface_setup.setup_fallback()
+    except Exception as e:
+        logger.error(f"Hugging Face setup error: {str(e)}")
     
     # Make sure DISPLAY is set for Selenium
     os.environ["DISPLAY"] = ":99"
