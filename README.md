@@ -44,14 +44,14 @@ Installation
 6)File Structure:Ensure your project has the following files:
 
 
-news-analyzer
-├── news.py             # Main application file
-├── news_fetcher.py     # Fetches news links from various sources
-├── content_scraper.py  # Extracts content from news articles
-├── summary.py          # Handles article summarization
-├── topic_extractor.py  # Extracts key topics from articles
-├── comparative_analysis.py  # Compares multiple news sources
-└── README.md           # This file
+    news-analyzer
+       news.py             # Main application file
+       news_fetcher.py     # Fetches news links from various sources
+       content_scraper.py  # Extracts content from news articles
+       summary.py          # Handles article summarization
+       topic_extractor.py  # Extracts key topics from articles
+       comparative_analysis.py  # Compares multiple news sources
+       README.md           # This file
 
 7)Usage Instructions
   a: Starting the Application
@@ -148,3 +148,4 @@ License
 This project is licensed under the MIT License - see the LICENSE file for details.
 
 Created by grittyuser007 | Last updated: 2025-03-24
+Check out the configuration reference at https://huggingface.co/docs/hub/spaces-config-reference
