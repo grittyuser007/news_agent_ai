@@ -157,46 +157,44 @@ class ContentScraper:
             logger.error(f"Error saving cache: {e}")
     
     def _initialize_selenium(self):
-        """Initialize Selenium WebDriver with more aggressive optimizations"""
-        if self.driver is not None:
-            return self.driver
+    """Initialize Selenium WebDriver for Hugging Face Spaces"""
+    if self.driver is not None:
+        return self.driver
             
-        chrome_options = Options()
-        chrome_options.add_argument("--headless=new")
-        chrome_options.add_argument("--disable-gpu")
-        chrome_options.add_argument("--no-sandbox")
-        chrome_options.add_argument("--disable-dev-shm-usage")
-        
-        # Additional speed optimizations
-        chrome_options.add_argument("--disable-extensions")
-        chrome_options.add_argument("--disable-notifications")
-        chrome_options.add_argument("--disable-geolocation")
-        chrome_options.add_argument("--disable-infobars")
-        chrome_options.add_argument("--disable-browser-side-navigation")
-        chrome_options.add_argument(f"user-agent={random.choice(self.user_agents)}")
-        
-        # Even more aggressive resource blocking
-        chrome_prefs = {
-            "profile.default_content_settings": {"images": 2, "javascript": 1},
-            "profile.managed_default_content_settings": {"images": 2},
-            "permissions.default.stylesheet": 2,
-            # Disable save password popup
-            "credentials_enable_service": False,
-            "profile.password_manager_enabled": False,
-            # Disable downloads
-            "download_restrictions": 3,
-        }
-        chrome_options.add_experimental_option("prefs", chrome_prefs)
-        chrome_options.add_experimental_option("excludeSwitches", ["enable-logging", "enable-automation"])
-        
-        # Initialize the WebDriver with service
+    from selenium import webdriver
+    from selenium.webdriver.chrome.options import Options
+    from selenium.webdriver.chrome.service import Service
+    
+    chrome_options = Options()
+    
+    # Critical flags for Hugging Face Spaces
+    chrome_options.add_argument("--headless")
+    chrome_options.add_argument("--disable-gpu")
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    
+    # For Hugging Face Spaces - explicitly set binary location
+    chrome_options.binary_location = "/usr/bin/chromium-browser"
+    
+    try:
+        # Use system chromedriver installed via packages.txt
+        service = Service("/usr/bin/chromedriver")
+        driver = webdriver.Chrome(service=service, options=chrome_options)
+        driver.set_page_load_timeout(self.timeout)
+        self.driver = driver
+        return driver
+    except Exception as e:
+        logger.error(f"Failed to initialize WebDriver: {str(e)}")
+        # Try with webdriver_manager as fallback (though this shouldn't be needed)
         try:
+            from webdriver_manager.chrome import ChromeDriverManager
             service = Service(ChromeDriverManager().install())
-            self.driver = webdriver.Chrome(service=service, options=chrome_options)
-            self.driver.set_page_load_timeout(self.timeout)
-            return self.driver
-        except Exception as e:
-            logger.error(f"Failed to initialize WebDriver: {e}")
+            driver = webdriver.Chrome(service=service, options=chrome_options)
+            driver.set_page_load_timeout(self.timeout)
+            self.driver = driver
+            return driver
+        except Exception as e2:
+            logger.error(f"Fallback WebDriver initialization also failed: {str(e2)}")
             return None
         
     def close(self):
