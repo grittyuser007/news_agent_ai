@@ -18,6 +18,7 @@ import os
 import sys
 import logging
 import time
+import re
 from datetime import datetime
 
 # Configure logging
@@ -50,6 +51,20 @@ def debug_print(message):
         current_time = datetime.now().strftime("%H:%M:%S")
         print(f"[DEBUG {current_time}] {message}")
         logger.info(f"DEBUG: {message}")
+
+def clean_html_text(text):
+    """Clean HTML tags from text"""
+    if not text:
+        return ""
+    
+    # First try with regex (faster)
+    clean_text = re.sub(r'<[^>]+>', ' ', text)
+    # Replace multiple spaces with a single space
+    clean_text = re.sub(r'\s+', ' ', clean_text)
+    # Replace HTML entities
+    clean_text = clean_text.replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>')\
+                          .replace('&quot;', '"').replace('&#39;', "'")
+    return clean_text.strip()
 
 @st.cache_resource(show_spinner=False)
 def load_components():
@@ -171,6 +186,13 @@ def process_search(news_fetcher, content_scraper, summary_gen, topic_extractor, 
             for article in articles:
                 if article['url'] not in seen_urls:
                     seen_urls.add(article['url'])
+                    # Clean HTML from source and other fields
+                    if 'source' in article:
+                        article['source'] = clean_html_text(article['source'])
+                    if 'timestamp' in article:
+                        article['timestamp'] = clean_html_text(article['timestamp'])
+                    if 'title' in article:
+                        article['title'] = clean_html_text(article['title'])
                     unique_articles.append(article)
             
             if len(unique_articles) < len(articles):
@@ -217,6 +239,12 @@ def process_search(news_fetcher, content_scraper, summary_gen, topic_extractor, 
                     content_length = len(content) if content else 0
                     debug_print(f"Article {idx+1}: Content extracted, length={content_length}")
                     
+                    # Clean HTML from content if present
+                    if content and '<' in content:
+                        processed_article['content'] = clean_html_text(content)
+                        content = processed_article['content']
+                        content_length = len(content)
+                    
                     # Generate summary if content was successfully retrieved
                     if content and content != "Failed to extract content" and content != "Article behind paywall" and content_length > 300:
                         try:
@@ -233,7 +261,11 @@ def process_search(news_fetcher, content_scraper, summary_gen, topic_extractor, 
                                 
                             # Check if summary was generated properly
                             if summary and len(summary) > 100:
-                                summary += f"\n\n[Article from: {article.get('source', 'Unknown')}]"
+                                # Clean HTML from summary if present
+                                if '<' in summary:
+                                    summary = clean_html_text(summary)
+                                
+                                summary += f"\n\n[Article from: {clean_html_text(article.get('source', 'Unknown'))}]"
                                 processed_article['summary'] = summary
                                 success_count += 1
                             else:
@@ -304,8 +336,8 @@ def process_search(news_fetcher, content_scraper, summary_gen, topic_extractor, 
                     processed_articles.append({
                         'title': title,
                         'url': url,
-                        'source': article.get('source', 'Unknown'),
-                        'timestamp': article.get('timestamp', ''),
+                        'source': clean_html_text(article.get('source', 'Unknown')),
+                        'timestamp': clean_html_text(article.get('timestamp', '')),
                         'content': f"Error processing article: {str(e)}",
                         'summary': f"Error processing article: {str(e)}",
                         'article_id': f"article_{idx}_{hash(url) % 10000}",
@@ -475,6 +507,17 @@ def main():
                     elif article.get('content', '') == "Article behind paywall":
                         title_prefix = "🔒 "
                     
+                    # Clean source and timestamp if they contain HTML
+                    source = clean_html_text(article.get('source', 'Unknown'))
+                    timestamp = clean_html_text(article.get('timestamp', ''))
+                    
+                    # Get summary text for display (remove HTML and links)
+                    summary_text = article.get('summary', '')
+                    if summary_text:
+                        summary_text = clean_html_text(summary_text)
+                        # Limit length for display
+                        summary_text = summary_text[:150] + "..." if len(summary_text) > 150 else summary_text
+                    
                     # Format topics as badges if available
                     topics_html = ""
                     if article.get('topics'):
@@ -504,9 +547,9 @@ def main():
                         st.markdown(f"""
                         <div style='border:1px solid #ddd; border-radius:5px; padding:8px; margin-bottom:8px; height:220px; overflow:hidden;'>
                             <h4>{title_prefix}{article['title'][:50] + '...' if len(article['title']) > 50 else article['title']}</h4>
-                            <p style='color:gray; font-size:small;'>{article.get('source', 'Unknown')}</p>
+                            <p style='color:gray; font-size:small;'>{source} | {timestamp}</p>
                             <p>{sentiment}</p>
-                            <p>{article.get('summary', '')[:60]}...</p>
+                            <p>{summary_text}</p>
                             <div>{topics_html}</div>
                         </div>
                         """, unsafe_allow_html=True)
@@ -551,6 +594,11 @@ def main():
                         if st.button("Next →", disabled=st.session_state.current_article_index == len(st.session_state.articles) - 1):
                             go_to_next_article()
                 
+                # Clean HTML from article data
+                title = clean_html_text(article.get('title', 'Untitled'))
+                source = clean_html_text(article.get('source', 'Unknown'))
+                timestamp = clean_html_text(article.get('timestamp', ''))
+                
                 # Check if content has warnings
                 has_warning = False
                 warning_message = ""
@@ -567,8 +615,8 @@ def main():
                     warning_message = f"❌ {content}"
                     
                 # Article content
-                st.markdown(f"## {article['title']}")
-                st.markdown(f"**Source:** {article.get('source', 'Unknown')} | **Published:** {article.get('timestamp', '')}")
+                st.markdown(f"## {title}")
+                st.markdown(f"**Source:** {source} | **Published:** {timestamp}")
                 
                 # Display URL with verification
                 url = article.get('url', '#')
@@ -611,20 +659,21 @@ def main():
                 tab1, tab2, tab3 = st.tabs(["Summary", "Full Content", "Audio (Hindi)"])
                 
                 with tab1:
-                    sentiment, polarity = get_sentiment(article.get('summary', ''))
+                    summary = clean_html_text(article.get('summary', ''))
+                    sentiment, polarity = get_sentiment(summary)
                     st.markdown(f"**Sentiment:** {sentiment} (Polarity: {polarity:.2f})")
                     
                     # Display summary with fallback
-                    summary = article.get('summary', '')
                     if not summary or len(summary) < 50:
                         st.info("No proper summary was generated for this article.")
-                        summary = article.get('content', '')[:500] + "..."
+                        content_clean = clean_html_text(article.get('content', ''))
+                        summary = content_clean[:500] + "..."
                     st.markdown(summary)
                 
                 with tab2:
-                    content = article.get('content', 'Content not available')
-                    if len(content) > 0:
-                        st.markdown(content)
+                    content_clean = clean_html_text(article.get('content', 'Content not available'))
+                    if len(content_clean) > 0:
+                        st.markdown(content_clean)
                     else:
                         st.info("No content was extracted for this article.")
                     
@@ -632,9 +681,10 @@ def main():
                         st.markdown(f"[Read original article]({url})")
                 
                 with tab3:
-                    if st.session_state.enable_tts and article.get('summary') and not article.get('summary', '').startswith('Error'):
+                    summary = clean_html_text(article.get('summary', ''))
+                    if st.session_state.enable_tts and summary and not summary.startswith('Error'):
                         with st.spinner("Generating Hindi audio..."):
-                            audio_buffer, hindi_text = text_to_hindi_speech(article.get('summary', ''))
+                            audio_buffer, hindi_text = text_to_hindi_speech(summary)
                         
                         if audio_buffer:
                             st.audio(audio_buffer, format='audio/mp3')
@@ -651,7 +701,7 @@ def main():
                     else:
                         if not st.session_state.enable_tts:
                             st.info("Enable Hindi Audio in the search page to use this feature")
-                        elif article.get('summary', '').startswith('Error'):
+                        elif summary.startswith('Error'):
                             st.warning("Cannot generate audio for content with errors")
                         else:
                             st.info("No summary available for audio conversion")
@@ -669,7 +719,10 @@ def main():
                 
                 # Display basic information
                 st.markdown(f"**Analysis Timestamp:** {results.get('timestamp', 'Unknown')}")
-                st.markdown(f"**Sources Compared:** {', '.join(results.get('sources', ['Unknown']))}")
+                
+                # Clean HTML from sources
+                sources = [clean_html_text(source) for source in results.get('sources', ['Unknown'])]
+                st.markdown(f"**Sources Compared:** {', '.join(sources)}")
                 
                 # Create tabs for different analysis types
                 tabs = st.tabs([
@@ -782,4 +835,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
