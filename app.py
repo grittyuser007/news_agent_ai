@@ -12,10 +12,17 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("NewsAnalyzerApp")
 logger.info("Initializing News Analyzer application")
 
-# Run the setup script first
-import setup
-setup.setup_virtual_display()
-chromium_available = setup.verify_chromium()
+# Detect if running in Hugging Face Spaces
+is_huggingface = os.environ.get('SPACE_ID') is not None
+logger.info(f"Running in Hugging Face Spaces: {is_huggingface}")
+
+if is_huggingface:
+    # Run Hugging Face setup
+    logger.info("Running Hugging Face setup")
+    import huggingface_setup
+    
+    # Make sure DISPLAY is set for Selenium
+    os.environ["DISPLAY"] = ":99"
 
 # Download required NLTK resources
 try:
@@ -31,11 +38,6 @@ cache_dir = Path("./content_cache")
 if not cache_dir.exists():
     logger.info("Creating content cache directory")
     cache_dir.mkdir(exist_ok=True)
-
-# Set environment variables for better compatibility
-os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
-os.environ["PYTHONWARNINGS"] = "ignore"
-os.environ["PYTHONUNBUFFERED"] = "1"
 
 # Launch the main application
 logger.info("Starting News Analyzer Streamlit app")
