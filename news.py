@@ -1,3 +1,7 @@
+"""
+Advanced News Analyzer with Hindi TTS, Topic Extraction, and Comparative Analysis
+Optimized for performance with non-JS content prioritization
+"""
 import streamlit as st
 from news_fetcher import NewsFetcher
 from content_scraper import ContentScraper
@@ -40,14 +44,21 @@ def get_sentiment(text):
         logger.error(f"Sentiment analysis error: {str(e)}")
         return '❓ Unknown', 0.0
 
+def debug_print(message):
+    """Print debug messages when DEBUG_MODE is enabled"""
+    if DEBUG_MODE:
+        current_time = datetime.now().strftime("%H:%M:%S")
+        print(f"[DEBUG {current_time}] {message}")
+        logger.info(f"DEBUG: {message}")
+
 @st.cache_resource(show_spinner=False)
 def load_components():
     """Initialize system components with better error handling"""
     try:
-        # Initialize the components
-        news_fetcher = NewsFetcher()
+        # Initialize with optimized settings
+        news_fetcher = NewsFetcher(use_google=True)
         content_scraper = ContentScraper(
-            use_selenium=False,  # Use the faster BeautifulSoup approach
+            use_selenium=False,  # Use optimized scraping by default
             cache_dir="./content_cache",
             cache_duration_days=1
         )
@@ -124,17 +135,9 @@ def get_simple_news_fallback(company, num_articles=5):
         logger.error(f"Fallback news generation failed: {e}")
         return []
 
-def debug_print(message):
-    """Print debug messages when DEBUG_MODE is enabled"""
-    if DEBUG_MODE:
-        current_time = datetime.now().strftime("%H:%M:%S")
-        print(f"[DEBUG {current_time}] {message}")
-        logger.info(f"DEBUG: {message}")
-
 def process_search(news_fetcher, content_scraper, summary_gen, topic_extractor, company, num_articles, enable_tts):
     """
-    Process search and update session state with results
-    Fixed to ensure articles are properly summarized and links are correct
+    Process search with improved scraping reliability to find non-JS content
     """
     if not company:
         st.warning("Please enter a company name")
@@ -145,15 +148,22 @@ def process_search(news_fetcher, content_scraper, summary_gen, topic_extractor, 
             # Start timing for performance tracking
             start_time = time.time()
             
-            # Get news articles
-            debug_print(f"Fetching news for '{company}'")
-            articles = news_fetcher.get_news_links(company, num_articles)
+            # Get news articles with enhanced search for scrapable content
+            # Request more articles than needed to ensure enough good content
+            st.info(f"Searching for news about '{company}'...")
+            articles = news_fetcher.get_news_links(
+                company, 
+                max_articles=int(num_articles * 1.5),  # Get extra articles
+                min_preferred=int(num_articles * 0.7)   # Ensure most are from preferred domains
+            )
             
             if not articles:
-                st.warning(f"No news found for '{company}'. Please try another search term.")
+                st.warning("No news found for this company.")
                 return
             
-            debug_print(f"Found {len(articles)} articles for '{company}'")
+            # Log domains found
+            domains = [urlparse(a.get('url', '')).netloc for a in articles]
+            debug_print(f"Found articles from domains: {domains}")
             
             # Remove duplicate articles (based on URL)
             unique_articles = []
@@ -164,7 +174,7 @@ def process_search(news_fetcher, content_scraper, summary_gen, topic_extractor, 
                     unique_articles.append(article)
             
             if len(unique_articles) < len(articles):
-                st.info(f"Removed {len(articles) - len(unique_articles)} duplicate news sources")
+                debug_print(f"Removed {len(articles) - len(unique_articles)} duplicate news sources")
                 
             articles = unique_articles
             processed_articles = []
@@ -173,33 +183,13 @@ def process_search(news_fetcher, content_scraper, summary_gen, topic_extractor, 
             progress_bar = st.progress(0)
             processing_placeholder = st.empty()
             
-            # Process articles in order of expected difficulty (simplest domains first)
-            def sort_key(article):
-                url = article.get('url', '')
-                domain = urlparse(url).netloc
-                # Simple news sites first (usually faster to process)
-                simple_domains = ['reuters.com', 'apnews.com', 'bbc.com', 'npr.org']
-                complex_domains = ['nytimes.com', 'wsj.com', 'medium.com', 'bloomberg.com']
-                
-                if any(d in domain for d in simple_domains):
-                    return 0
-                elif any(d in domain for d in complex_domains):
-                    return 2
-                return 1
-            
-            # Sort articles by domain complexity for more balanced processing
-            articles.sort(key=sort_key)
-            
-            # Track success and failure
+            # Count successful extractions
             success_count = 0
+            paywall_count = 0
             failure_count = 0
             
             for idx, article in enumerate(articles):
                 url = article.get('url', '')
-                if not url:
-                    debug_print(f"Article {idx} has no URL, skipping")
-                    continue
-                    
                 title = article.get('title', 'Untitled')
                 
                 # Update progress
@@ -212,65 +202,82 @@ def process_search(news_fetcher, content_scraper, summary_gen, topic_extractor, 
                 try:
                     # Verify URL before proceeding
                     if not url.startswith(('http://', 'https://')):
-                        debug_print(f"Invalid URL format: {url}")
-                        url = f"https://{url}" if not url.startswith('www.') else f"https://{url}"
+                        if url.startswith('www.'):
+                            url = f"https://{url}"
+                        else:
+                            url = f"https://www.{url}"
                         article['url'] = url
                         debug_print(f"Fixed URL: {url}")
                     
                     # Scrape content for this article
                     processed_article = content_scraper.scrape_article(article)
                     
-                    # Debug content extraction
-                    content_length = len(processed_article.get('content', '')) if processed_article.get('content') else 0
+                    # Check content length
+                    content = processed_article.get('content', '')
+                    content_length = len(content) if content else 0
                     debug_print(f"Article {idx+1}: Content extracted, length={content_length}")
                     
                     # Generate summary if content was successfully retrieved
-                    if processed_article.get('content') and processed_article.get('content') != "Failed to extract content" and content_length > 300:
+                    if content and content != "Failed to extract content" and content != "Article behind paywall" and content_length > 300:
                         try:
                             # Generate summary based on content length
-                            if content_length > 10000:
-                                debug_print(f"Article {idx+1}: Using full summarization for long content")
-                                summary = summary_gen.generate_summary(processed_article['content'][:10000])
+                            if content_length > 15000:
+                                debug_print(f"Article {idx+1}: Large content, trimming to 15000 chars")
+                                summary = summary_gen.generate_summary(content[:15000])
+                            elif content_length > 8000:
+                                debug_print(f"Article {idx+1}: Using full summarization")
+                                summary = summary_gen.generate_summary(content)
                             else:
                                 debug_print(f"Article {idx+1}: Using fast summarization")
-                                summary = summary_gen.fast_summarize(processed_article['content'])
+                                summary = summary_gen.fast_summarize(content)
                                 
                             # Check if summary was generated properly
-                            if summary and len(summary) > 50:
+                            if summary and len(summary) > 100:
                                 summary += f"\n\n[Article from: {article.get('source', 'Unknown')}]"
                                 processed_article['summary'] = summary
                                 success_count += 1
                             else:
-                                debug_print(f"Article {idx+1}: Summary too short, using fallback")
-                                processed_article['summary'] = processed_article['content'][:500] + "..."
-                                failure_count += 1
+                                debug_print(f"Article {idx+1}: Summary too short, using content excerpt")
+                                # Create a simple summary from the first few sentences
+                                sentences = content.split('. ')
+                                simple_summary = '. '.join(sentences[:5]) + '.'
+                                processed_article['summary'] = simple_summary[:1000] + "..."
+                                success_count += 1  # Still count as success since we have content
 
                             # Extract topics from the article content
                             try:
                                 topics = topic_extractor.get_topic_highlights(
-                                    processed_article['content'], 
+                                    content[:5000],  # Limit to first 5000 chars for performance
                                     num_topics=5
                                 )
                                 processed_article['topics'] = topics
                             except Exception as e:
                                 logger.error(f"Topic extraction failed: {e}")
                                 processed_article['topics'] = []
-
                         except Exception as e:
                             logger.error(f"Summary generation failed: {e}")
                             debug_print(f"Article {idx+1}: Summary generation failed: {str(e)}")
-                            processed_article['summary'] = processed_article['content'][:500] + "..."
+                            # Create a simple summary from the first few sentences
+                            sentences = content.split('. ')
+                            simple_summary = '. '.join(sentences[:5]) + '.'
+                            processed_article['summary'] = simple_summary[:1000] + "..."
                             processed_article['topics'] = []
                             failure_count += 1
                     else:
-                        if not processed_article.get('content'):
+                        if not content:
                             processed_article['summary'] = "Content could not be retrieved."
-                        elif processed_article.get('content') == "Failed to extract content" or processed_article.get('content') == "Article behind paywall":
-                            processed_article['summary'] = f"{processed_article.get('content')}. Try visiting the original article."
+                            failure_count += 1
+                        elif content == "Failed to extract content":
+                            processed_article['summary'] = "Failed to extract content. The page may require JavaScript."
+                            failure_count += 1
+                        elif content == "Article behind paywall":
+                            processed_article['summary'] = f"This article is behind a paywall. Try visiting the original article."
+                            processed_article['topics'] = []
+                            paywall_count += 1
                         else:
                             processed_article['summary'] = "Content is too short to summarize."
+                            failure_count += 1
                         processed_article['topics'] = []
-                        failure_count += 1
                     
                     # Ensure the article has a unique ID
                     if 'article_id' not in processed_article:
@@ -320,7 +327,7 @@ def process_search(news_fetcher, content_scraper, summary_gen, topic_extractor, 
             
             # Display success message with stats
             st.success(f"Found and analyzed {len(processed_articles)} news articles in {total_time:.1f} seconds.")
-            st.info(f"Successfully summarized: {success_count}, Failed: {failure_count}")
+            st.info(f"Successfully summarized: {success_count}, Paywalled: {paywall_count}, Failed: {failure_count}")
             
         except Exception as e:
             logger.error(f"Search processing failed: {str(e)}")
@@ -775,3 +782,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
