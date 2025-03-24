@@ -34,8 +34,8 @@ os.environ["PYTHONWARNINGS"] = "ignore"
 # Debug flag to help troubleshoot issues
 DEBUG_MODE = True
 
-# Fixed number of articles to select from slider
-ARTICLE_CHOICES = [3, 5, 7, 10, 15, 20]
+# Fixed number of articles to select from slider - updated with more options and higher default
+ARTICLE_CHOICES = [5, 10, 15, 20, 25, 30]
 
 def get_sentiment(text):
     """Perform sentiment analysis using TextBlob with error handling"""
@@ -213,7 +213,7 @@ def text_to_hindi_speech(text):
         logger.error(f"TTS failed: {str(e)}")
         return alternative_tts(text)  # Return alternative TTS as final fallback
 
-def get_simple_news_fallback(company, num_articles=5):
+def get_simple_news_fallback(company, num_articles=10):
     """Get simplified news when all scraping methods fail"""
     import requests
     from datetime import datetime, timedelta
@@ -225,7 +225,12 @@ def get_simple_news_fallback(company, num_articles=5):
             f"{company} stock performance update", 
             f"{company} announces new leadership changes",
             f"Investors react to {company}'s quarterly results",
-            f"Analysis: What's next for {company}"
+            f"Analysis: What's next for {company}",
+            f"{company} releases new product lineup",
+            f"Market experts weigh in on {company}'s strategy",
+            f"{company} partners with tech giants for new initiative",
+            f"Financial analysis of {company}'s quarterly report",
+            f"Industry impact of {company}'s recent moves"
         ]
         
         contents = [
@@ -233,19 +238,24 @@ def get_simple_news_fallback(company, num_articles=5):
             f"Financial analysts weigh in on {company}'s latest moves and market position.",
             f"A detailed look at {company}'s strategy and how it's positioned against competitors.",
             f"Industry experts provide analysis on {company}'s recent announcements and future prospects.",
-            f"An in-depth examination of {company}'s challenges and opportunities in the current market."
+            f"An in-depth examination of {company}'s challenges and opportunities in the current market.",
+            f"Reviewing the latest product announcements from {company} and their potential market impact.",
+            f"Market experts and industry insiders share their thoughts on {company}'s business strategy.",
+            f"Details on {company}'s new partnership with leading technology companies and what it means.",
+            f"Breaking down the numbers from {company}'s latest financial report and analyst reactions.",
+            f"How {company}'s recent business decisions are reshaping the competitive landscape."
         ]
         
         articles = []
-        for i in range(min(num_articles, 5)):
+        for i in range(min(num_articles, len(headlines))):
             date = datetime.now() - timedelta(days=i)
             articles.append({
-                'title': headlines[i % len(headlines)],
+                'title': headlines[i],
                 'url': f"https://example.com/news/{company.lower().replace(' ', '-')}/{i}",
                 'source': "News Analyzer Fallback Source",
                 'timestamp': date.strftime("%Y-%m-%d %H:%M:%S"),
-                'content': contents[i % len(contents)] * 3,  # Repeat content to make it longer
-                'summary': contents[i % len(contents)],
+                'content': contents[i] * 3,  # Repeat content to make it longer
+                'summary': contents[i],
                 'article_id': f"fallback_{i}_{hash(company) % 10000}",
                 'topics': [('fallback topic', 'keyword'), ('example topic', 'entity')]
             })
@@ -271,9 +281,13 @@ def process_search(news_fetcher, content_scraper, summary_gen, topic_extractor, 
             # Get news articles with enhanced search for scrapable content
             # Request more articles than needed to ensure enough good content
             st.info(f"Searching for news about '{company}'...")
+            
+            # Ensure we get at least the requested number of articles plus some buffer
+            search_count = max(int(num_articles * 2), 20)  # At least double requested or 20
+            
             articles = news_fetcher.get_news_links(
                 company, 
-                max_articles=int(num_articles * 1.5),  # Get extra articles
+                max_articles=search_count,
                 min_preferred=int(num_articles * 0.7)   # Ensure most are from preferred domains
             )
             
@@ -320,7 +334,7 @@ def process_search(news_fetcher, content_scraper, summary_gen, topic_extractor, 
                 title = article.get('title', 'Untitled')
                 
                 # Update progress
-                progress = (idx + 1) / len(articles)
+                progress = (idx + 1) / min(len(articles), num_articles * 1.5)  # Cap at 150% to not appear stuck
                 progress_bar.progress(progress)
                 processing_placeholder.text(f"Processing article {idx+1}/{len(articles)}: {title[:40]}...")
                 
@@ -440,6 +454,11 @@ def process_search(news_fetcher, content_scraper, summary_gen, topic_extractor, 
                     # Save cache occasionally
                     if idx % 5 == 0:
                         content_scraper._save_cache()
+                    
+                    # If we have enough successful articles, we can stop processing
+                    if success_count >= num_articles and idx >= num_articles:
+                        debug_print(f"Reached target of {num_articles} successful articles, stopping processing")
+                        break
                         
                 except Exception as e:
                     logger.error(f"Failed to process article {title}: {e}")
@@ -460,8 +479,18 @@ def process_search(news_fetcher, content_scraper, summary_gen, topic_extractor, 
             progress_bar.empty()
             processing_placeholder.empty()
             
+            # If we didn't get enough articles, add some fallbacks
+            if len(processed_articles) < num_articles:
+                debug_print(f"Not enough articles found ({len(processed_articles)}), adding fallbacks to reach {num_articles}")
+                fallback_count = num_articles - len(processed_articles)
+                fallback_articles = get_simple_news_fallback(company, fallback_count)
+                processed_articles.extend(fallback_articles)
+                
+            # Sort articles by timestamp if available, newest first
+            processed_articles.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
+            
             # Update session state
-            st.session_state.articles = processed_articles
+            st.session_state.articles = processed_articles[:num_articles]  # Only keep the requested number
             st.session_state.view_mode = "search"  # Stay in search view to show results
             st.session_state.enable_tts = enable_tts  # Store TTS preference in session state
             
@@ -470,7 +499,7 @@ def process_search(news_fetcher, content_scraper, summary_gen, topic_extractor, 
             logger.info(f"Total processing time: {total_time:.2f} seconds")
             
             # Display success message with stats
-            st.success(f"Found and analyzed {len(processed_articles)} news articles in {total_time:.1f} seconds.")
+            st.success(f"Found and analyzed {len(st.session_state.articles)} news articles in {total_time:.1f} seconds.")
             st.info(f"Successfully summarized: {success_count}, Paywalled: {paywall_count}, Failed: {failure_count}")
             
         except Exception as e:
@@ -524,7 +553,7 @@ def main():
     if 'comparison_results' not in st.session_state:
         st.session_state.comparison_results = None
     if 'num_articles' not in st.session_state:
-        st.session_state.num_articles = 5
+        st.session_state.num_articles = 10  # Default to 10 articles
     
     # Functions for navigation
     def go_to_article(index):
@@ -574,10 +603,11 @@ def main():
             
             with col2:
                 # Fixed options for number of articles (resolves slider issues)
+                # Change default to 10 articles (index 1)
                 num_articles = st.selectbox(
                     "Number of Articles:", 
                     options=ARTICLE_CHOICES,
-                    index=1,  # Default to 5 articles
+                    index=1,  # Default to 10 articles (second option in the list)
                     key="num_articles_select"
                 )
                 st.session_state.num_articles = num_articles
@@ -598,6 +628,7 @@ def main():
                 
                 with col1:
                     st.markdown(f"### Latest News for '{st.session_state.company}'")
+                    st.markdown(f"Displaying {len(st.session_state.articles)} articles")
                 
                 with col2:
                     # Show comparison button if we have enough articles
@@ -615,77 +646,86 @@ def main():
                                     change_to_comparison_view()
                 
                 # Create a 3-column layout for news cards with selection checkboxes
-                article_cols = st.columns(3)
+                # Display articles in rows of 3
+                total_articles = len(st.session_state.articles)
+                rows = (total_articles + 2) // 3  # Ceiling division
                 
-                for idx, article in enumerate(st.session_state.articles):
-                    col_idx = idx % 3
-                    sentiment, _ = get_sentiment(article.get('summary', ''))
+                for row in range(rows):
+                    article_cols = st.columns(3)
                     
-                    # Add warning symbol for error content
-                    title_prefix = ""
-                    if article.get('content', '').startswith('Error:') or article.get('content', '') == "Failed to extract content":
-                        title_prefix = "❌ "
-                    elif article.get('content', '') == "Article behind paywall":
-                        title_prefix = "🔒 "
-                    
-                    # Clean source and timestamp if they contain HTML
-                    source = clean_html_text(article.get('source', 'Unknown'))
-                    timestamp = clean_html_text(article.get('timestamp', ''))
-                    
-                    # Get summary text for display (remove HTML and links)
-                    summary_text = article.get('summary', '')
-                    if summary_text:
-                        summary_text = clean_html_text(summary_text)
-                        # Limit length for display
-                        summary_text = summary_text[:150] + "..." if len(summary_text) > 150 else summary_text
-                    
-                    # Format topics as badges if available
-                    topics_html = ""
-                    if article.get('topics'):
-                        # Badge colors by type
-                        badge_colors = {
-                            "keyword": "#007bff",  # Blue
-                            "entity": "#28a745",   # Green
-                            "concept": "#dc3545"   # Red
-                        }
+                    for col in range(3):
+                        idx = row * 3 + col
+                        if idx >= total_articles:
+                            continue  # Skip empty slots
+                            
+                        article = st.session_state.articles[idx]
+                        sentiment, _ = get_sentiment(article.get('summary', ''))
                         
-                        # Show up to 3 topics in the card
-                        topics_to_show = article.get('topics', [])[:3]
-                        for topic, topic_type in topics_to_show:
-                            badge_color = badge_colors.get(topic_type, "#6c757d")  # Default to gray
-                            topics_html += f'<span style="display: inline-block; background-color: {badge_color}; color: white; padding: 1px 5px; margin: 1px; border-radius: 8px; font-size: 0.7em;">{topic}</span> '
-                    
-                    with article_cols[col_idx]:
-                        # Add selection checkbox for comparison
-                        is_selected = idx in st.session_state.selected_articles
-                        if st.checkbox(f"Select for comparison", value=is_selected, key=f"select_{idx}"):
-                            if idx not in st.session_state.selected_articles:
-                                st.session_state.selected_articles.append(idx)
-                        else:
-                            if idx in st.session_state.selected_articles:
-                                st.session_state.selected_articles.remove(idx)
+                        # Add warning symbol for error content
+                        title_prefix = ""
+                        if article.get('content', '').startswith('Error:') or article.get('content', '') == "Failed to extract content":
+                            title_prefix = "❌ "
+                        elif article.get('content', '') == "Article behind paywall":
+                            title_prefix = "🔒 "
                         
-                        st.markdown(f"""
-                        <div style='border:1px solid #ddd; border-radius:5px; padding:8px; margin-bottom:8px; height:220px; overflow:hidden;'>
-                            <h4>{title_prefix}{article['title'][:50] + '...' if len(article['title']) > 50 else article['title']}</h4>
-                            <p style='color:gray; font-size:small;'>{source} | {timestamp}</p>
-                            <p>{sentiment}</p>
-                            <p>{summary_text}</p>
-                            <div>{topics_html}</div>
-                        </div>
-                        """, unsafe_allow_html=True)
+                        # Clean source and timestamp if they contain HTML
+                        source = clean_html_text(article.get('source', 'Unknown'))
+                        timestamp = clean_html_text(article.get('timestamp', ''))
                         
-                        url = article.get('url', '#')
-                        has_url = url and url != '#'
+                        # Get summary text for display (remove HTML and links)
+                        summary_text = article.get('summary', '')
+                        if summary_text:
+                            summary_text = clean_html_text(summary_text)
+                            # Limit length for display
+                            summary_text = summary_text[:150] + "..." if len(summary_text) > 150 else summary_text
                         
-                        btn_cols = st.columns([3, 1])
-                        with btn_cols[0]:
-                            if st.button(f"Read Article #{idx+1}", key=f"read_{idx}"):
-                                change_to_reading_view(idx)
-                                
-                        with btn_cols[1]:
-                            if has_url:
-                                st.markdown(f"[🔗]({url})")
+                        # Format topics as badges if available
+                        topics_html = ""
+                        if article.get('topics'):
+                            # Badge colors by type
+                            badge_colors = {
+                                "keyword": "#007bff",  # Blue
+                                "entity": "#28a745",   # Green
+                                "concept": "#dc3545"   # Red
+                            }
+                            
+                            # Show up to 3 topics in the card
+                            topics_to_show = article.get('topics', [])[:3]
+                            for topic, topic_type in topics_to_show:
+                                badge_color = badge_colors.get(topic_type, "#6c757d")  # Default to gray
+                                topics_html += f'<span style="display: inline-block; background-color: {badge_color}; color: white; padding: 1px 5px; margin: 1px; border-radius: 8px; font-size: 0.7em;">{topic}</span> '
+                        
+                        with article_cols[col]:
+                            # Add selection checkbox for comparison
+                            is_selected = idx in st.session_state.selected_articles
+                            if st.checkbox(f"Select for comparison", value=is_selected, key=f"select_{idx}"):
+                                if idx not in st.session_state.selected_articles:
+                                    st.session_state.selected_articles.append(idx)
+                            else:
+                                if idx in st.session_state.selected_articles:
+                                    st.session_state.selected_articles.remove(idx)
+                            
+                            st.markdown(f"""
+                            <div style='border:1px solid #ddd; border-radius:5px; padding:8px; margin-bottom:8px; height:220px; overflow:hidden;'>
+                                <h4>{title_prefix}{article['title'][:50] + '...' if len(article['title']) > 50 else article['title']}</h4>
+                                <p style='color:gray; font-size:small;'>{source} | {timestamp}</p>
+                                <p>{sentiment}</p>
+                                <p>{summary_text}</p>
+                                <div>{topics_html}</div>
+                            </div>
+                            """, unsafe_allow_html=True)
+                            
+                            url = article.get('url', '#')
+                            has_url = url and url != '#'
+                            
+                            btn_cols = st.columns([3, 1])
+                            with btn_cols[0]:
+                                if st.button(f"Read Article #{idx+1}", key=f"read_{idx}"):
+                                    change_to_reading_view(idx)
+                                    
+                            with btn_cols[1]:
+                                if has_url:
+                                    st.markdown(f"[🔗]({url})")
         
         # Reading View
         elif st.session_state.view_mode == "reading":
