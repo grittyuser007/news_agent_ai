@@ -19,6 +19,7 @@ import sys
 import logging
 import time
 import re
+import io
 from datetime import datetime
 
 # Configure logging
@@ -32,6 +33,9 @@ os.environ["PYTHONWARNINGS"] = "ignore"
 
 # Debug flag to help troubleshoot issues
 DEBUG_MODE = True
+
+# Fixed number of articles to select from slider
+ARTICLE_CHOICES = [3, 5, 7, 10, 15, 20]
 
 def get_sentiment(text):
     """Perform sentiment analysis using TextBlob with error handling"""
@@ -66,6 +70,90 @@ def clean_html_text(text):
                           .replace('&quot;', '"').replace('&#39;', "'")
     return clean_text.strip()
 
+def verify_content_quality(content):
+    """
+    Verify the quality of content and check for issues
+    Returns: 
+        tuple (bool, str) - (is_good, reason)
+    """
+    if not content or len(content) < 100:
+        return False, "Content is too short"
+    
+    # Check if content is mostly HTML
+    html_tags_count = len(re.findall(r'<[^>]+>', content))
+    if html_tags_count > 20:
+        return False, "Content contains too many HTML tags"
+    
+    # Check for repeated text patterns (a sign of extraction issues)
+    words = content.split()
+    if len(words) > 100:
+        # Check for repeating patterns in the text
+        chunks = [' '.join(words[i:i+10]) for i in range(0, len(words) - 10, 10)]
+        unique_chunks = set(chunks)
+        if len(unique_chunks) < len(chunks) * 0.7:  # More than 30% repetition
+            return False, "Content has too much repetitive text"
+    
+    # Check for placeholder/error text
+    placeholder_patterns = [
+        r'this content (is|was) (not|no longer) available',
+        r'please subscribe to continue reading',
+        r'sign in to read (more|full article)',
+        r'access to this (resource|content|page) (is|has been) (denied|restricted)',
+        r'(error|unable) (loading|retrieving) content',
+        r'javascript (is|must be) (required|enabled)',
+        r'connection (error|issue|problem)'
+    ]
+    
+    content_lower = content.lower()
+    for pattern in placeholder_patterns:
+        if re.search(pattern, content_lower):
+            return False, "Content contains error or placeholder text"
+    
+    # Check for reasonable paragraph structure
+    paragraphs = re.split(r'\n\n|\r\n\r\n', content)
+    if len(paragraphs) < 2:
+        # Try another split method
+        paragraphs = content.split('. ')
+        if len(paragraphs) < 3:
+            return False, "Content doesn't have proper paragraph structure"
+    
+    # Check for reasonable sentence length
+    avg_sentence_length = len(content) / max(len(content.split('.')), 1)
+    if avg_sentence_length < 5 or avg_sentence_length > 500:
+        return False, "Content has unusual sentence structure"
+    
+    return True, "Content looks good"
+
+def alternative_tts(text):
+    """
+    Alternative text-to-speech method when Google TTS fails
+    This creates a simple audio file with a message
+    """
+    try:
+        from pydub import AudioSegment
+        from pydub.generators import Sine
+        
+        # Generate a short beep
+        sine_wave = Sine(440)  # 440 Hz
+        audio = sine_wave.to_audio_segment(duration=500)  # half second
+        
+        # Add some silence
+        silence = AudioSegment.silent(duration=250)
+        audio = audio + silence + audio  # beep-pause-beep
+        
+        # Export to buffer
+        buffer = io.BytesIO()
+        audio.export(buffer, format="mp3")
+        buffer.seek(0)
+        return buffer, "TTS service unavailable. Hindi translation could not be generated."
+    except:
+        # If pydub is not available, create an empty buffer
+        buffer = io.BytesIO()
+        # Write a minimal valid MP3 file (essentially silence)
+        buffer.write(b'\xFF\xFB\x90\x44\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00')
+        buffer.seek(0)
+        return buffer, "TTS service unavailable. Hindi translation could not be generated."
+
 @st.cache_resource(show_spinner=False)
 def load_components():
     """Initialize system components with better error handling"""
@@ -94,19 +182,36 @@ def text_to_hindi_speech(text):
         # Limit text length for better performance
         if len(text) > 3000:
             text = text[:3000] + "..."
-            
-        # Translate to Hindi
-        hindi_text = GoogleTranslator(source='auto', target='hi').translate(text)
         
-        # Generate audio
-        tts = gTTS(text=hindi_text, lang='hi', slow=False)
-        audio_buffer = BytesIO()
-        tts.write_to_fp(audio_buffer)
-        audio_buffer.seek(0)
-        return audio_buffer, hindi_text
+        # Try translation first
+        try:
+            hindi_text = GoogleTranslator(source='auto', target='hi').translate(text)
+        except Exception as e:
+            logger.error(f"Translation failed: {str(e)}")
+            # Try an alternative translation service if available
+            try:
+                from translate import Translator
+                translator = Translator(to_lang="hi", from_lang="en")
+                hindi_text = translator.translate(text[:1000])  # Limit length more for this fallback
+                hindi_text += "\n\n[Translation truncated due to service limitations]"
+            except:
+                # If all translation fails, use original text with notice
+                hindi_text = text + "\n\n[Hindi translation unavailable]"
+        
+        # Try text-to-speech
+        try:
+            tts = gTTS(text=hindi_text, lang='hi', slow=False)
+            audio_buffer = BytesIO()
+            tts.write_to_fp(audio_buffer)
+            audio_buffer.seek(0)
+            return audio_buffer, hindi_text
+        except Exception as e:
+            logger.error(f"gTTS failed: {str(e)}")
+            # Fall back to alternative TTS method
+            return alternative_tts(hindi_text)
     except Exception as e:
         logger.error(f"TTS failed: {str(e)}")
-        return None, text  # Return original text if translation fails
+        return alternative_tts(text)  # Return alternative TTS as final fallback
 
 def get_simple_news_fallback(company, num_articles=5):
     """Get simplified news when all scraping methods fail"""
@@ -245,8 +350,12 @@ def process_search(news_fetcher, content_scraper, summary_gen, topic_extractor, 
                         content = processed_article['content']
                         content_length = len(content)
                     
-                    # Generate summary if content was successfully retrieved
-                    if content and content != "Failed to extract content" and content != "Article behind paywall" and content_length > 300:
+                    # Verify content quality
+                    content_quality, quality_reason = verify_content_quality(content)
+                    debug_print(f"Article {idx+1}: Content quality check: {content_quality}, Reason: {quality_reason}")
+                    
+                    # Generate summary if content quality is good
+                    if content_quality and content != "Failed to extract content" and content != "Article behind paywall" and content_length > 300:
                         try:
                             # Generate summary based on content length
                             if content_length > 15000:
@@ -296,7 +405,10 @@ def process_search(news_fetcher, content_scraper, summary_gen, topic_extractor, 
                             processed_article['topics'] = []
                             failure_count += 1
                     else:
-                        if not content:
+                        if not content_quality:
+                            processed_article['summary'] = f"Content quality issues: {quality_reason}"
+                            failure_count += 1
+                        elif not content:
                             processed_article['summary'] = "Content could not be retrieved."
                             failure_count += 1
                         elif content == "Failed to extract content":
@@ -411,6 +523,8 @@ def main():
         st.session_state.selected_articles = []
     if 'comparison_results' not in st.session_state:
         st.session_state.comparison_results = None
+    if 'num_articles' not in st.session_state:
+        st.session_state.num_articles = 5
     
     # Functions for navigation
     def go_to_article(index):
@@ -459,7 +573,14 @@ def main():
                 st.session_state.company = company
             
             with col2:
-                num_articles = st.slider("Number of Articles:", 5, 12, 6)  # Default to 6 instead of 8
+                # Fixed options for number of articles (resolves slider issues)
+                num_articles = st.selectbox(
+                    "Number of Articles:", 
+                    options=ARTICLE_CHOICES,
+                    index=1,  # Default to 5 articles
+                    key="num_articles_select"
+                )
+                st.session_state.num_articles = num_articles
                 
             with col3:
                 enable_tts = st.checkbox("Enable Hindi Audio", value=st.session_state.enable_tts)
@@ -688,16 +809,20 @@ def main():
                         
                         if audio_buffer:
                             st.audio(audio_buffer, format='audio/mp3')
-                            st.download_button(
-                                label="Download Hindi Audio",
-                                data=audio_buffer,
-                                file_name="hindi_summary.mp3",
-                                mime="audio/mp3"
-                            )
+                            if "TTS service unavailable" not in hindi_text:
+                                st.download_button(
+                                    label="Download Hindi Audio",
+                                    data=audio_buffer,
+                                    file_name="hindi_summary.mp3",
+                                    mime="audio/mp3"
+                                )
+                            else:
+                                st.warning("TTS service currently unavailable. Try again later.")
+                                
                             st.markdown("### Hindi Translation")
                             st.markdown(hindi_text)
                         else:
-                            st.warning("Hindi audio generation failed")
+                            st.warning("Hindi audio generation failed. Service may be down.")
                     else:
                         if not st.session_state.enable_tts:
                             st.info("Enable Hindi Audio in the search page to use this feature")
@@ -822,6 +947,32 @@ def main():
                     content_scraper.cache = {}
                     content_scraper._save_cache()
                     st.success("Cache cleared")
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.button("Test TTS Service"):
+                        with st.spinner("Testing TTS..."):
+                            audio, text = text_to_hindi_speech("This is a test of the text to speech service.")
+                            st.audio(audio, format='audio/mp3')
+                            st.text(text)
+                
+                with col2:
+                    if st.button("Run Content Verification Test"):
+                        with st.spinner("Testing content verification..."):
+                            sample_texts = {
+                                "Good content": "This is a well-formed article about technology. It contains multiple paragraphs with good structure and relevant information. The content discusses important aspects of modern computing and provides valuable insights.",
+                                "HTML content": "<div>This content has <b>too many HTML tags</b> which might <span style='color:red'>cause issues</span> when displaying <a href='#'>in the app</a>.</div>",
+                                "Repetitive content": "This sentence is repeated. This sentence is repeated. This sentence is repeated. This sentence is repeated. This sentence is repeated.",
+                                "Error content": "Error loading content. Please subscribe to continue reading this article.",
+                                "Very short": "Too short."
+                            }
+                            
+                            results = {}
+                            for name, text in sample_texts.items():
+                                is_good, reason = verify_content_quality(text)
+                                results[name] = f"{'✅' if is_good else '❌'} {reason}"
+                            
+                            st.json(results)
     
     except Exception as e:
         logger.error(f"Application error: {str(e)}")
