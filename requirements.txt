@@ -19,3 +19,7 @@ yake
 spacy
 keybert
 scikit-learn>=0.24.0
+pandas
+matplotlib
+scikit-learn>=0.24.0
+numpy
