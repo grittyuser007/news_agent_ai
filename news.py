@@ -3,6 +3,7 @@ from news_fetcher import NewsFetcher
 from content_scraper import ContentScraper
 from summary import SummaryGenerator
 from topic_extractor import TopicExtractor
+from comparative_analysis import ComparativeAnalyzer
 from textblob import TextBlob
 from gtts import gTTS
 from deep_translator import GoogleTranslator
@@ -47,10 +48,11 @@ def load_components():
             cache_duration_days=1
         )
         summary_gen = SummaryGenerator()
-        topic_extractor = TopicExtractor()  # Initialize the topic extractor
+        topic_extractor = TopicExtractor()
+        comparative_analyzer = ComparativeAnalyzer()  # Initialize comparative analyzer
         
         logger.info("Components initialized successfully")
-        return news_fetcher, content_scraper, summary_gen, topic_extractor
+        return news_fetcher, content_scraper, summary_gen, topic_extractor, comparative_analyzer
     except Exception as e:
         logger.error(f"Component initialization failed: {str(e)}")
         st.error("Critical system initialization error. Check logs for details.")
@@ -106,7 +108,7 @@ def get_simple_news_fallback(company, num_articles=5):
                 'content': contents[i % len(contents)] * 3,  # Repeat content to make it longer
                 'summary': contents[i % len(contents)],
                 'article_id': f"fallback_{i}_{hash(company) % 10000}",
-                'topics': [('fallback topic', 'keyword'), ('example topic', 'entity')]  # Default topics
+                'topics': [('fallback topic', 'keyword'), ('example topic', 'entity')]
             })
         
         return articles
@@ -270,6 +272,28 @@ def process_search(news_fetcher, content_scraper, summary_gen, topic_extractor, 
             logger.error(f"Search processing failed: {str(e)}")
             st.error(f"Search failed: {str(e)}")
 
+def compare_articles(comparative_analyzer, articles):
+    """Run comparative analysis on selected articles"""
+    if not articles or len(articles) < 2:
+        st.warning("Please select at least 2 articles to compare.")
+        return None
+    
+    with st.spinner("Analyzing article differences..."):
+        try:
+            # Run the comparative analysis
+            analysis_results = comparative_analyzer.generate_comparative_analysis(articles)
+            
+            if 'error' in analysis_results:
+                st.error(analysis_results['error'])
+                return None
+                
+            return analysis_results
+            
+        except Exception as e:
+            logger.error(f"Comparative analysis failed: {str(e)}")
+            st.error(f"Analysis failed: {str(e)}")
+            return None
+
 def main():
     st.set_page_config(
         page_title="News Analyzer", 
@@ -283,11 +307,15 @@ def main():
     if 'current_article_index' not in st.session_state:
         st.session_state.current_article_index = -1
     if 'view_mode' not in st.session_state:
-        st.session_state.view_mode = "search"  # Can be "search" or "reading"
+        st.session_state.view_mode = "search"  # Can be "search", "reading", or "comparison"
     if 'company' not in st.session_state:
         st.session_state.company = ""
     if 'enable_tts' not in st.session_state:
         st.session_state.enable_tts = True
+    if 'selected_articles' not in st.session_state:
+        st.session_state.selected_articles = []
+    if 'comparison_results' not in st.session_state:
+        st.session_state.comparison_results = None
     
     # Functions for navigation
     def go_to_article(index):
@@ -310,6 +338,9 @@ def main():
     def change_to_reading_view(idx):
         st.session_state.current_article_index = idx
         st.session_state.view_mode = "reading"
+        
+    def change_to_comparison_view():
+        st.session_state.view_mode = "comparison"
     
     # Header with app title
     st.markdown("""
@@ -319,7 +350,7 @@ def main():
     """, unsafe_allow_html=True)
     
     try:
-        news_fetcher, content_scraper, summary_gen, topic_extractor = load_components()
+        news_fetcher, content_scraper, summary_gen, topic_extractor, comparative_analyzer = load_components()
         
         # Search View
         if st.session_state.view_mode == "search":
@@ -341,12 +372,33 @@ def main():
                 
                 if st.button("Search News", type="primary"):
                     process_search(news_fetcher, content_scraper, summary_gen, topic_extractor, company, num_articles, enable_tts)
+                    # Reset article selections when doing a new search
+                    st.session_state.selected_articles = []
+                    st.session_state.comparison_results = None
 
             # Display previously fetched articles as cards
             if st.session_state.articles:
-                st.markdown(f"### Latest News for '{st.session_state.company}'")
+                col1, col2 = st.columns([3, 1])
                 
-                # Create a 3-column layout for news cards
+                with col1:
+                    st.markdown(f"### Latest News for '{st.session_state.company}'")
+                
+                with col2:
+                    # Show comparison button if we have enough articles
+                    if len(st.session_state.articles) >= 2:
+                        if st.button("Compare Selected Articles", disabled=len(st.session_state.selected_articles) < 2):
+                            if len(st.session_state.selected_articles) >= 2:
+                                # Get the selected articles
+                                articles_to_compare = [
+                                    st.session_state.articles[idx] for idx in st.session_state.selected_articles
+                                ]
+                                # Run the comparison
+                                results = compare_articles(comparative_analyzer, articles_to_compare)
+                                if results:
+                                    st.session_state.comparison_results = results
+                                    change_to_comparison_view()
+                
+                # Create a 3-column layout for news cards with selection checkboxes
                 article_cols = st.columns(3)
                 
                 for idx, article in enumerate(st.session_state.articles):
@@ -377,6 +429,15 @@ def main():
                             topics_html += f'<span style="display: inline-block; background-color: {badge_color}; color: white; padding: 1px 5px; margin: 1px; border-radius: 8px; font-size: 0.7em;">{topic}</span> '
                     
                     with article_cols[col_idx]:
+                        # Add selection checkbox for comparison
+                        is_selected = idx in st.session_state.selected_articles
+                        if st.checkbox(f"Select for comparison", value=is_selected, key=f"select_{idx}"):
+                            if idx not in st.session_state.selected_articles:
+                                st.session_state.selected_articles.append(idx)
+                        else:
+                            if idx in st.session_state.selected_articles:
+                                st.session_state.selected_articles.remove(idx)
+                        
                         st.markdown(f"""
                         <div style='border:1px solid #ddd; border-radius:5px; padding:8px; margin-bottom:8px; height:220px; overflow:hidden;'>
                             <h4>{title_prefix}{article['title'][:50] + '...' if len(article['title']) > 50 else article['title']}</h4>
@@ -391,7 +452,7 @@ def main():
                             change_to_reading_view(idx)
         
         # Reading View
-        else:
+        elif st.session_state.view_mode == "reading":
             if 0 <= st.session_state.current_article_index < len(st.session_state.articles):
                 article = st.session_state.articles[st.session_state.current_article_index]
                 
@@ -505,15 +566,111 @@ def main():
                         else:
                             st.info("No summary available for audio conversion")
         
+        # Comparison View
+        elif st.session_state.view_mode == "comparison":
+            # Navigation header
+            if st.button("← Back to News List"):
+                return_to_search()
+                
+            st.markdown("## Comparative News Analysis")
+            
+            if st.session_state.comparison_results:
+                results = st.session_state.comparison_results
+                
+                # Display basic information
+                st.markdown(f"**Analysis Timestamp:** {results.get('timestamp', 'Unknown')}")
+                st.markdown(f"**Sources Compared:** {', '.join(results.get('sources', ['Unknown']))}")
+                
+                # Create tabs for different analysis types
+                tabs = st.tabs([
+                    "Entity Comparison", 
+                    "Key Phrase Comparison",
+                    "Sentiment Analysis",
+                    "Content Similarity"
+                ])
+                
+                # Entity Comparison Tab
+                with tabs[0]:
+                    if "entity_comparison" in results:
+                        st.markdown("### Entity Comparison Across Sources")
+                        st.markdown("This table shows how frequently different entities (people, organizations, locations) are mentioned across sources.")
+                        st.markdown(results["entity_comparison"], unsafe_allow_html=True)
+                        
+                        if "entity_heatmap" in results:
+                            st.markdown("### Entity Mention Heatmap")
+                            st.markdown("Visual representation of entity mentions across sources:")
+                            st.image(f"data:image/png;base64,{results['entity_heatmap']}")
+                    else:
+                        st.info("Entity comparison not available for these articles.")
+                
+                # Key Phrase Comparison Tab
+                with tabs[1]:
+                    if "phrase_comparison" in results:
+                        st.markdown("### Key Phrase Comparison")
+                        st.markdown("This table shows important phrases and their relative importance in each article.")
+                        st.markdown(results["phrase_comparison"], unsafe_allow_html=True)
+                    else:
+                        st.info("Key phrase comparison not available for these articles.")
+                
+                # Sentiment Analysis Tab
+                with tabs[2]:
+                    if "sentiment_comparison" in results:
+                        st.markdown("### Sentiment Analysis")
+                        st.markdown("""
+                        This chart shows sentiment analysis results for each source:
+                        - **Polarity**: Ranges from -1 (negative) to +1 (positive)
+                        - **Subjectivity**: Ranges from 0 (objective) to 1 (subjective)
+                        """)
+                        
+                        # Display sentiment data
+                        st.markdown(results["sentiment_comparison"], unsafe_allow_html=True)
+                        
+                        if "sentiment_chart" in results:
+                            st.image(f"data:image/png;base64,{results['sentiment_chart']}")
+                    else:
+                        st.info("Sentiment comparison not available for these articles.")
+                
+                # Content Similarity Tab
+                with tabs[3]:
+                    if "similarity_matrix" in results:
+                        st.markdown("### Content Similarity")
+                        st.markdown("""
+                        This shows how similar the articles are to each other in terms of content:
+                        - Values range from 0 (completely different) to 1 (identical)
+                        - Higher values indicate more similar content
+                        """)
+                        
+                        # Display similarity data
+                        st.markdown(results["similarity_matrix"], unsafe_allow_html=True)
+                        
+                        if "similarity_heatmap" in results:
+                            st.image(f"data:image/png;base64,{results['similarity_heatmap']}")
+                    else:
+                        st.info("Content similarity analysis not available for these articles.")
+                        
+                # Add a data export option
+                st.download_button(
+                    label="Export Analysis Data (JSON)",
+                    data=str(results),
+                    file_name=f"news_analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                    mime="application/json"
+                )
+                
+            else:
+                st.warning("No comparison results available. Please select articles to compare.")
+                if st.button("Return to article selection"):
+                    return_to_search()
+        
         # Footer with system status
         with st.expander("System Status"):
             st.markdown(f"- News Fetcher: {'✅ Operational' if news_fetcher else '❌ Failed'}")
             st.markdown(f"- Content Scraper: {'✅ Operational' if content_scraper else '❌ Failed'}")
             st.markdown(f"- Summarizer: {'✅ Operational' if summary_gen else '❌ Failed'}")
             st.markdown(f"- Topic Extractor: {'✅ Operational' if topic_extractor else '❌ Failed'}")
+            st.markdown(f"- Comparative Analyzer: {'✅ Operational' if comparative_analyzer else '❌ Failed'}")
             st.markdown(f"- TTS Service: {'✅ Enabled' if st.session_state.enable_tts else '❌ Disabled'}")
             st.markdown(f"- Cache: {'✅ Loaded' if hasattr(content_scraper, 'cache') and content_scraper.cache else '⚠️ Empty'}")
-            st.markdown(f"- Processing: {'Serial (One by One)' if True else 'Parallel'}")
+            st.markdown(f"- Current Time (UTC): {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}")
     
     except Exception as e:
         logger.error(f"Application error: {str(e)}")
