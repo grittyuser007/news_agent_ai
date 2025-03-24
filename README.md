@@ -1,4 +1,12 @@
-# News Analyzer Pro - Setup and Usage Instructions
+---
+license: apache-2.0
+title: News Analyzer Pro - Setup and Usage Instructions
+emoji: 🚀
+colorFrom: red
+colorTo: blue
+short_description: 'ai based summarizer for news '
+---
+# News Analyzer Pro - Setup and Usage Instruction
 
 Overview-
 News Analyzer Pro is an advanced web application that helps you quickly analyze news articles from multiple sources. The tool fetches, extracts, summarizes, and performs topic and sentiment analysis on news articles. It also provides comparative analysis between different news sources and offers text-to-speech capabilities in Hindi.
@@ -144,8 +152,7 @@ Caching improves performance for repeated searches
 
 
 
-License
-This project is licensed under the MIT License - see the LICENSE file for details.
+
 
 Created by grittyuser007 | Last updated: 2025-03-24
 Check out the configuration reference at https://huggingface.co/docs/hub/spaces-config-reference
