@@ -2,6 +2,7 @@ import streamlit as st
 from news_fetcher import NewsFetcher
 from content_scraper import ContentScraper
 from summary import SummaryGenerator
+from topic_extractor import TopicExtractor
 from textblob import TextBlob
 from gtts import gTTS
 from deep_translator import GoogleTranslator
@@ -46,9 +47,10 @@ def load_components():
             cache_duration_days=1
         )
         summary_gen = SummaryGenerator()
+        topic_extractor = TopicExtractor()  # Initialize the topic extractor
         
         logger.info("Components initialized successfully")
-        return news_fetcher, content_scraper, summary_gen
+        return news_fetcher, content_scraper, summary_gen, topic_extractor
     except Exception as e:
         logger.error(f"Component initialization failed: {str(e)}")
         st.error("Critical system initialization error. Check logs for details.")
@@ -103,7 +105,8 @@ def get_simple_news_fallback(company, num_articles=5):
                 'timestamp': date.strftime("%Y-%m-%d %H:%M:%S"),
                 'content': contents[i % len(contents)] * 3,  # Repeat content to make it longer
                 'summary': contents[i % len(contents)],
-                'article_id': f"fallback_{i}_{hash(company) % 10000}"
+                'article_id': f"fallback_{i}_{hash(company) % 10000}",
+                'topics': [('fallback topic', 'keyword'), ('example topic', 'entity')]  # Default topics
             })
         
         return articles
@@ -111,7 +114,7 @@ def get_simple_news_fallback(company, num_articles=5):
         logger.error(f"Fallback news generation failed: {e}")
         return []
 
-def process_search(news_fetcher, content_scraper, summary_gen, company, num_articles, enable_tts):
+def process_search(news_fetcher, content_scraper, summary_gen, topic_extractor, company, num_articles, enable_tts):
     """
     Process search and update session state with results
     Processing one article at a time to preserve headline/content matching
@@ -200,9 +203,22 @@ def process_search(news_fetcher, content_scraper, summary_gen, company, num_arti
                                 
                             summary += f"\n\n[Article from: {article.get('source', 'Unknown')}]"
                             processed_article['summary'] = summary
+
+                            # Extract topics from the article content
+                            try:
+                                topics = topic_extractor.get_topic_highlights(
+                                    processed_article['content'], 
+                                    num_topics=5
+                                )
+                                processed_article['topics'] = topics
+                            except Exception as e:
+                                logger.error(f"Topic extraction failed: {e}")
+                                processed_article['topics'] = []
+
                         except Exception as e:
                             logger.error(f"Summary generation failed: {e}")
                             processed_article['summary'] = processed_article['content'][:500] + "..."
+                            processed_article['topics'] = []
                     else:
                         if not processed_article.get('content'):
                             processed_article['summary'] = "Content could not be retrieved."
@@ -210,6 +226,7 @@ def process_search(news_fetcher, content_scraper, summary_gen, company, num_arti
                             processed_article['summary'] = f"{processed_article.get('content')}. Try visiting the original article."
                         else:
                             processed_article['summary'] = "Content is too short to summarize."
+                        processed_article['topics'] = []
                     
                     # Make sure article has a unique ID
                     if 'article_id' not in processed_article:
@@ -231,7 +248,8 @@ def process_search(news_fetcher, content_scraper, summary_gen, company, num_arti
                         'timestamp': article.get('timestamp', ''),
                         'content': f"Error processing article: {str(e)}",
                         'summary': f"Error processing article: {str(e)}",
-                        'article_id': f"article_{idx}_{hash(url) % 10000}"
+                        'article_id': f"article_{idx}_{hash(url) % 10000}",
+                        'topics': []
                     })
             
             progress_bar.empty()
@@ -301,7 +319,7 @@ def main():
     """, unsafe_allow_html=True)
     
     try:
-        news_fetcher, content_scraper, summary_gen = load_components()
+        news_fetcher, content_scraper, summary_gen, topic_extractor = load_components()
         
         # Search View
         if st.session_state.view_mode == "search":
@@ -322,7 +340,7 @@ def main():
                 st.session_state.enable_tts = enable_tts
                 
                 if st.button("Search News", type="primary"):
-                    process_search(news_fetcher, content_scraper, summary_gen, company, num_articles, enable_tts)
+                    process_search(news_fetcher, content_scraper, summary_gen, topic_extractor, company, num_articles, enable_tts)
 
             # Display previously fetched articles as cards
             if st.session_state.articles:
@@ -342,13 +360,30 @@ def main():
                     elif article.get('content', '') == "Article behind paywall":
                         title_prefix = "🔒 "
                     
+                    # Format topics as badges if available
+                    topics_html = ""
+                    if article.get('topics'):
+                        # Badge colors by type
+                        badge_colors = {
+                            "keyword": "#007bff",  # Blue
+                            "entity": "#28a745",   # Green
+                            "concept": "#dc3545"   # Red
+                        }
+                        
+                        # Show up to 3 topics in the card
+                        topics_to_show = article.get('topics', [])[:3]
+                        for topic, topic_type in topics_to_show:
+                            badge_color = badge_colors.get(topic_type, "#6c757d")  # Default to gray
+                            topics_html += f'<span style="display: inline-block; background-color: {badge_color}; color: white; padding: 1px 5px; margin: 1px; border-radius: 8px; font-size: 0.7em;">{topic}</span> '
+                    
                     with article_cols[col_idx]:
                         st.markdown(f"""
-                        <div style='border:1px solid #ddd; border-radius:5px; padding:8px; margin-bottom:8px; height:200px; overflow:hidden;'>
+                        <div style='border:1px solid #ddd; border-radius:5px; padding:8px; margin-bottom:8px; height:220px; overflow:hidden;'>
                             <h4>{title_prefix}{article['title'][:50] + '...' if len(article['title']) > 50 else article['title']}</h4>
                             <p style='color:gray; font-size:small;'>{article.get('source', 'Unknown')}</p>
                             <p>{sentiment}</p>
-                            <p>{article.get('summary', '')[:80]}...</p>
+                            <p>{article.get('summary', '')[:60]}...</p>
+                            <div>{topics_html}</div>
                         </div>
                         """, unsafe_allow_html=True)
                         
@@ -402,6 +437,32 @@ def main():
                 st.markdown(f"## {article['title']}")
                 st.markdown(f"**Source:** {article.get('source', 'Unknown')} | **Published:** {article.get('timestamp', '')}")
                 
+                # Display topics if available
+                if article.get('topics'):
+                    topic_html = ""
+                    
+                    # Group topics by type
+                    topic_by_type = {}
+                    for topic, topic_type in article.get('topics', []):
+                        if topic_type not in topic_by_type:
+                            topic_by_type[topic_type] = []
+                        topic_by_type[topic_type].append(topic)
+                    
+                    # Create badge colors for different topic types
+                    badge_colors = {
+                        "keyword": "#007bff",  # Blue
+                        "entity": "#28a745",   # Green
+                        "concept": "#dc3545"   # Red
+                    }
+                    
+                    st.write("**Key Topics:**")
+                    for topic_type, topics in topic_by_type.items():
+                        badge_color = badge_colors.get(topic_type, "#6c757d")  # Default gray
+                        for topic in topics:
+                            topic_html += f'<span style="display: inline-block; background-color: {badge_color}; color: white; padding: 2px 8px; margin: 2px; border-radius: 10px; font-size: 0.8em;">{topic}</span> '
+                    
+                    st.markdown(topic_html, unsafe_allow_html=True)
+                
                 # Show warning if needed
                 if has_warning:
                     st.warning(warning_message)
@@ -449,6 +510,7 @@ def main():
             st.markdown(f"- News Fetcher: {'✅ Operational' if news_fetcher else '❌ Failed'}")
             st.markdown(f"- Content Scraper: {'✅ Operational' if content_scraper else '❌ Failed'}")
             st.markdown(f"- Summarizer: {'✅ Operational' if summary_gen else '❌ Failed'}")
+            st.markdown(f"- Topic Extractor: {'✅ Operational' if topic_extractor else '❌ Failed'}")
             st.markdown(f"- TTS Service: {'✅ Enabled' if st.session_state.enable_tts else '❌ Disabled'}")
             st.markdown(f"- Cache: {'✅ Loaded' if hasattr(content_scraper, 'cache') and content_scraper.cache else '⚠️ Empty'}")
             st.markdown(f"- Processing: {'Serial (One by One)' if True else 'Parallel'}")
