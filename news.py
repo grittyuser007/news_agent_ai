@@ -25,6 +25,9 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 os.environ["CUDA_VISIBLE_DEVICES"] = ""
 os.environ["PYTHONWARNINGS"] = "ignore"
 
+# Debug flag to help troubleshoot issues
+DEBUG_MODE = True
+
 def get_sentiment(text):
     """Perform sentiment analysis using TextBlob with error handling"""
     try:
@@ -41,10 +44,10 @@ def get_sentiment(text):
 def load_components():
     """Initialize system components with better error handling"""
     try:
-        # Initialize with optimized settings
-        news_fetcher = NewsFetcher(use_google=True)
+        # Initialize the components
+        news_fetcher = NewsFetcher()
         content_scraper = ContentScraper(
-            use_selenium=False,  # Use optimized scraping by default
+            use_selenium=False,  # Use the faster BeautifulSoup approach
             cache_dir="./content_cache",
             cache_duration_days=1
         )
@@ -56,12 +59,16 @@ def load_components():
         return news_fetcher, content_scraper, summary_gen, topic_extractor, comparative_analyzer
     except Exception as e:
         logger.error(f"Component initialization failed: {str(e)}")
-        st.error("Critical system initialization error. Check logs for details.")
+        st.error(f"Critical system initialization error: {str(e)}")
         raise RuntimeError("Failed to initialize components")
 
 def text_to_hindi_speech(text):
     """Convert text to Hindi speech with fallback handling"""
     try:
+        # Limit text length for better performance
+        if len(text) > 3000:
+            text = text[:3000] + "..."
+            
         # Translate to Hindi
         hindi_text = GoogleTranslator(source='auto', target='hi').translate(text)
         
@@ -117,11 +124,17 @@ def get_simple_news_fallback(company, num_articles=5):
         logger.error(f"Fallback news generation failed: {e}")
         return []
 
+def debug_print(message):
+    """Print debug messages when DEBUG_MODE is enabled"""
+    if DEBUG_MODE:
+        current_time = datetime.now().strftime("%H:%M:%S")
+        print(f"[DEBUG {current_time}] {message}")
+        logger.info(f"DEBUG: {message}")
+
 def process_search(news_fetcher, content_scraper, summary_gen, topic_extractor, company, num_articles, enable_tts):
     """
     Process search and update session state with results
-    Processing one article at a time to preserve headline/content matching
-    With minor speed optimizations
+    Fixed to ensure articles are properly summarized and links are correct
     """
     if not company:
         st.warning("Please enter a company name")
@@ -133,11 +146,14 @@ def process_search(news_fetcher, content_scraper, summary_gen, topic_extractor, 
             start_time = time.time()
             
             # Get news articles
+            debug_print(f"Fetching news for '{company}'")
             articles = news_fetcher.get_news_links(company, num_articles)
             
             if not articles:
-                st.warning("No news found for this company.")
+                st.warning(f"No news found for '{company}'. Please try another search term.")
                 return
+            
+            debug_print(f"Found {len(articles)} articles for '{company}'")
             
             # Remove duplicate articles (based on URL)
             unique_articles = []
@@ -157,13 +173,9 @@ def process_search(news_fetcher, content_scraper, summary_gen, topic_extractor, 
             progress_bar = st.progress(0)
             processing_placeholder = st.empty()
             
-            # Update less frequently (better UI performance)
-            updates_per_article = 2
-            update_counter = 0
-            
             # Process articles in order of expected difficulty (simplest domains first)
             def sort_key(article):
-                url = article['url']
+                url = article.get('url', '')
                 domain = urlparse(url).netloc
                 # Simple news sites first (usually faster to process)
                 simple_domains = ['reuters.com', 'apnews.com', 'bbc.com', 'npr.org']
@@ -178,34 +190,60 @@ def process_search(news_fetcher, content_scraper, summary_gen, topic_extractor, 
             # Sort articles by domain complexity for more balanced processing
             articles.sort(key=sort_key)
             
+            # Track success and failure
+            success_count = 0
+            failure_count = 0
+            
             for idx, article in enumerate(articles):
-                url = article['url']
+                url = article.get('url', '')
+                if not url:
+                    debug_print(f"Article {idx} has no URL, skipping")
+                    continue
+                    
                 title = article.get('title', 'Untitled')
                 
-                # Update progress less frequently for better performance
-                update_counter += 1
-                if update_counter % updates_per_article == 0:
-                    progress = (idx + 1) / len(articles)
-                    progress_bar.progress(progress)
-                    processing_placeholder.text(f"Processing article {idx+1}/{len(articles)}: {title[:40]}...")
+                # Update progress
+                progress = (idx + 1) / len(articles)
+                progress_bar.progress(progress)
+                processing_placeholder.text(f"Processing article {idx+1}/{len(articles)}: {title[:40]}...")
                 
-                logger.info(f"Processing article {idx+1}: {title[:30]}... from {url}")
+                debug_print(f"Processing article {idx+1}: {title[:30]}... from {url}")
                 
                 try:
+                    # Verify URL before proceeding
+                    if not url.startswith(('http://', 'https://')):
+                        debug_print(f"Invalid URL format: {url}")
+                        url = f"https://{url}" if not url.startswith('www.') else f"https://{url}"
+                        article['url'] = url
+                        debug_print(f"Fixed URL: {url}")
+                    
                     # Scrape content for this article
                     processed_article = content_scraper.scrape_article(article)
                     
+                    # Debug content extraction
+                    content_length = len(processed_article.get('content', '')) if processed_article.get('content') else 0
+                    debug_print(f"Article {idx+1}: Content extracted, length={content_length}")
+                    
                     # Generate summary if content was successfully retrieved
-                    if processed_article.get('content') and processed_article.get('content') != "Failed to extract content" and len(processed_article.get('content', '')) > 300:
+                    if processed_article.get('content') and processed_article.get('content') != "Failed to extract content" and content_length > 300:
                         try:
-                            if len(processed_article['content']) > 10000:
-                                summary = summary_gen.generate_summary(processed_article['content'])
+                            # Generate summary based on content length
+                            if content_length > 10000:
+                                debug_print(f"Article {idx+1}: Using full summarization for long content")
+                                summary = summary_gen.generate_summary(processed_article['content'][:10000])
                             else:
-                                # Use faster summarization method
+                                debug_print(f"Article {idx+1}: Using fast summarization")
                                 summary = summary_gen.fast_summarize(processed_article['content'])
                                 
-                            summary += f"\n\n[Article from: {article.get('source', 'Unknown')}]"
-                            processed_article['summary'] = summary
+                            # Check if summary was generated properly
+                            if summary and len(summary) > 50:
+                                summary += f"\n\n[Article from: {article.get('source', 'Unknown')}]"
+                                processed_article['summary'] = summary
+                                success_count += 1
+                            else:
+                                debug_print(f"Article {idx+1}: Summary too short, using fallback")
+                                processed_article['summary'] = processed_article['content'][:500] + "..."
+                                failure_count += 1
 
                             # Extract topics from the article content
                             try:
@@ -220,8 +258,10 @@ def process_search(news_fetcher, content_scraper, summary_gen, topic_extractor, 
 
                         except Exception as e:
                             logger.error(f"Summary generation failed: {e}")
+                            debug_print(f"Article {idx+1}: Summary generation failed: {str(e)}")
                             processed_article['summary'] = processed_article['content'][:500] + "..."
                             processed_article['topics'] = []
+                            failure_count += 1
                     else:
                         if not processed_article.get('content'):
                             processed_article['summary'] = "Content could not be retrieved."
@@ -230,19 +270,29 @@ def process_search(news_fetcher, content_scraper, summary_gen, topic_extractor, 
                         else:
                             processed_article['summary'] = "Content is too short to summarize."
                         processed_article['topics'] = []
+                        failure_count += 1
                     
-                    # Make sure article has a unique ID
+                    # Ensure the article has a unique ID
                     if 'article_id' not in processed_article:
                         processed_article['article_id'] = f"article_{idx}_{hash(url) % 10000}"
+                    
+                    # Make sure the URL is preserved
+                    if 'url' not in processed_article:
+                        processed_article['url'] = url
+                    
+                    # Make sure the title is preserved
+                    if 'title' not in processed_article:
+                        processed_article['title'] = title
                         
                     processed_articles.append(processed_article)
                     
-                    # Save less frequently
+                    # Save cache occasionally
                     if idx % 5 == 0:
                         content_scraper._save_cache()
                         
                 except Exception as e:
                     logger.error(f"Failed to process article {title}: {e}")
+                    debug_print(f"Article {idx+1}: Processing failed: {str(e)}")
                     # Add the article with error info
                     processed_articles.append({
                         'title': title,
@@ -254,6 +304,7 @@ def process_search(news_fetcher, content_scraper, summary_gen, topic_extractor, 
                         'article_id': f"article_{idx}_{hash(url) % 10000}",
                         'topics': []
                     })
+                    failure_count += 1
             
             progress_bar.empty()
             processing_placeholder.empty()
@@ -267,11 +318,15 @@ def process_search(news_fetcher, content_scraper, summary_gen, topic_extractor, 
             total_time = time.time() - start_time
             logger.info(f"Total processing time: {total_time:.2f} seconds")
             
+            # Display success message with stats
             st.success(f"Found and analyzed {len(processed_articles)} news articles in {total_time:.1f} seconds.")
+            st.info(f"Successfully summarized: {success_count}, Failed: {failure_count}")
             
         except Exception as e:
             logger.error(f"Search processing failed: {str(e)}")
             st.error(f"Search failed: {str(e)}")
+            if DEBUG_MODE:
+                st.code(str(e))
 
 def compare_articles(comparative_analyzer, articles):
     """Run comparative analysis on selected articles"""
@@ -449,8 +504,17 @@ def main():
                         </div>
                         """, unsafe_allow_html=True)
                         
-                        if st.button(f"Read Article #{idx+1}", key=f"read_{idx}"):
-                            change_to_reading_view(idx)
+                        url = article.get('url', '#')
+                        has_url = url and url != '#'
+                        
+                        btn_cols = st.columns([3, 1])
+                        with btn_cols[0]:
+                            if st.button(f"Read Article #{idx+1}", key=f"read_{idx}"):
+                                change_to_reading_view(idx)
+                                
+                        with btn_cols[1]:
+                            if has_url:
+                                st.markdown(f"[🔗]({url})")
         
         # Reading View
         elif st.session_state.view_mode == "reading":
@@ -499,6 +563,11 @@ def main():
                 st.markdown(f"## {article['title']}")
                 st.markdown(f"**Source:** {article.get('source', 'Unknown')} | **Published:** {article.get('timestamp', '')}")
                 
+                # Display URL with verification
+                url = article.get('url', '#')
+                if url and url != '#':
+                    st.markdown(f"**URL:** [Link to original article]({url})")
+                
                 # Display topics if available
                 if article.get('topics'):
                     topic_html = ""
@@ -528,7 +597,8 @@ def main():
                 # Show warning if needed
                 if has_warning:
                     st.warning(warning_message)
-                    st.markdown(f"**[View Original Article]({article['url']})**")
+                    if url and url != '#':
+                        st.markdown(f"**[View Original Article]({url})**")
                 
                 # Display tabs for different views of the article
                 tab1, tab2, tab3 = st.tabs(["Summary", "Full Content", "Audio (Hindi)"])
@@ -536,11 +606,23 @@ def main():
                 with tab1:
                     sentiment, polarity = get_sentiment(article.get('summary', ''))
                     st.markdown(f"**Sentiment:** {sentiment} (Polarity: {polarity:.2f})")
-                    st.markdown(article.get('summary', 'Summary not available'))
+                    
+                    # Display summary with fallback
+                    summary = article.get('summary', '')
+                    if not summary or len(summary) < 50:
+                        st.info("No proper summary was generated for this article.")
+                        summary = article.get('content', '')[:500] + "..."
+                    st.markdown(summary)
                 
                 with tab2:
-                    st.markdown(article.get('content', 'Content not available'))
-                    st.markdown(f"[Read original article]({article['url']})")
+                    content = article.get('content', 'Content not available')
+                    if len(content) > 0:
+                        st.markdown(content)
+                    else:
+                        st.info("No content was extracted for this article.")
+                    
+                    if url and url != '#':
+                        st.markdown(f"[Read original article]({url})")
                 
                 with tab3:
                     if st.session_state.enable_tts and article.get('summary') and not article.get('summary', '').startswith('Error'):
@@ -672,11 +754,24 @@ def main():
             st.markdown(f"- TTS Service: {'✅ Enabled' if st.session_state.enable_tts else '❌ Disabled'}")
             st.markdown(f"- Cache: {'✅ Loaded' if hasattr(content_scraper, 'cache') and content_scraper.cache else '⚠️ Empty'}")
             st.markdown(f"- Current Time (UTC): {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}")
+            st.markdown(f"- Current User: grittyuser007")
+            
+            if DEBUG_MODE:
+                st.markdown("- **Debug Mode: ENABLED**")
+                if st.button("Clear Cache"):
+                    content_scraper.cache = {}
+                    content_scraper._save_cache()
+                    st.success("Cache cleared")
     
     except Exception as e:
         logger.error(f"Application error: {str(e)}")
-        st.error("Critical application error. Please check logs.")
-        st.warning("Note: Translation service might be unavailable")
+        st.error(f"Critical application error: {str(e)}")
+        
+        if DEBUG_MODE:
+            import traceback
+            st.code(traceback.format_exc())
+        else:
+            st.warning("Enable DEBUG_MODE for more details")
 
 if __name__ == "__main__":
     main()
