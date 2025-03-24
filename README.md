@@ -6,6 +6,7 @@ colorFrom: red
 colorTo: blue
 short_description: 'ai based summarizer for news '
 sdk: streamlit
+sdk_version: 1.43.2
 ---
 # News Analyzer Pro - Setup and Usage Instruction
 
