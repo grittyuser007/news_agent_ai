@@ -12,6 +12,7 @@ import random
 import requests
 from urllib.parse import urlparse
 from bs4 import BeautifulSoup
+import re
 
 # Configure logging
 logger = logging.getLogger("ContentScraper")
@@ -124,7 +125,12 @@ class ContentScraper:
             'washingtonpost.com': self._extract_wapo,
             'news.yahoo.com': self._extract_yahoo,
             'cnn.com': self._extract_cnn,
-            'foxnews.com': self._extract_fox
+            'foxnews.com': self._extract_fox,
+            'hindustantimes.com': self._extract_hindustan_times,
+            'ndtv.com': self._extract_ndtv,
+            'timesofindia.indiatimes.com': self._extract_toi,
+            'thehindu.com': self._extract_the_hindu,
+            'economictimes.indiatimes.com': self._extract_economic_times
         }
         
         for site_domain, extractor in extractors.items():
@@ -139,6 +145,8 @@ class ContentScraper:
         content_div = soup.select_one('[data-testid="article-body"]')
         if not content_div:
             content_div = soup.select_one('.article-body__content__17Yit')
+        if not content_div:
+            content_div = soup.select_one('.StandardArticleBody_body')
         
         if content_div:
             paragraphs = content_div.find_all('p')
@@ -151,6 +159,8 @@ class ContentScraper:
         content_div = soup.select_one('.Article')
         if not content_div:
             content_div = soup.select_one('article')
+        if not content_div:
+            content_div = soup.select_one('.RichTextStoryBody')
         
         if content_div:
             paragraphs = content_div.find_all('p')
@@ -165,6 +175,9 @@ class ContentScraper:
             paragraphs = article_body.select('p[data-component="text-block"]')
             if not paragraphs:
                 paragraphs = article_body.select('div[data-component="text-block"]')
+            if not paragraphs:
+                # Try alternative selectors for BBC
+                paragraphs = article_body.select('.ssrcss-1q0x1qg-Paragraph')
             if not paragraphs:
                 paragraphs = article_body.find_all('p')
                 
@@ -314,6 +327,124 @@ class ContentScraper:
             return content
         return ""
     
+    def _extract_hindustan_times(self, soup):
+        """Extract content from Hindustan Times articles"""
+        content_div = soup.select_one('.storyDetails')
+        if not content_div:
+            content_div = soup.select_one('article')
+            
+        if content_div:
+            paragraphs = content_div.find_all('p')
+            content = '\n\n'.join([p.get_text().strip() for p in paragraphs if len(p.get_text().strip()) > 20])
+            return content
+        return ""
+    
+    def _extract_ndtv(self, soup):
+        """Extract content from NDTV articles"""
+        content_div = soup.select_one('.sp-cn')
+        if not content_div:
+            content_div = soup.select_one('article')
+            
+        if content_div:
+            paragraphs = content_div.find_all('p')
+            content = '\n\n'.join([p.get_text().strip() for p in paragraphs if len(p.get_text().strip()) > 20])
+            return content
+        return ""
+    
+    def _extract_toi(self, soup):
+        """Extract content from Times of India articles"""
+        content_div = soup.select_one('.normal')
+        if not content_div:
+            content_div = soup.select_one('._s30J')  # New TOI design
+        if not content_div:
+            content_div = soup.select_one('arttextxml')  # Old TOI format
+            
+        if content_div:
+            paragraphs = content_div.find_all('p')
+            if not paragraphs:  # TOI sometimes doesn't use paragraph tags
+                content = content_div.get_text().strip()
+                # Clean up content
+                content = re.sub(r'\s+', ' ', content)
+                # Split into paragraphs by double linebreaks or sentences
+                content = '\n\n'.join([p.strip() for p in re.split(r'(?:\n\n|\.\s+)', content) if len(p.strip()) > 20])
+                return content
+                
+            content = '\n\n'.join([p.get_text().strip() for p in paragraphs if len(p.get_text().strip()) > 20])
+            return content
+        return ""
+    
+    def _extract_the_hindu(self, soup):
+        """Extract content from The Hindu articles"""
+        content_div = soup.select_one('.article')
+        if not content_div:
+            content_div = soup.select_one('.story-content')
+            
+        if content_div:
+            paragraphs = content_div.find_all('p')
+            content = '\n\n'.join([p.get_text().strip() for p in paragraphs if len(p.get_text().strip()) > 20])
+            return content
+        return ""
+    
+    def _extract_economic_times(self, soup):
+        """Extract content from Economic Times articles"""
+        content_div = soup.select_one('.artText')
+        if not content_div:
+            content_div = soup.select_one('.article-body')
+            
+        if content_div:
+            paragraphs = content_div.find_all('p')
+            content = '\n\n'.join([p.get_text().strip() for p in paragraphs if len(p.get_text().strip()) > 20])
+            return content
+        return ""
+    
+    def extract_from_multiple_selectors(self, soup):
+        """
+        Try multiple selector combinations to extract content
+        Returns the longest content found
+        """
+        best_content = ""
+        
+        # Various selector combinations to try
+        selector_groups = [
+            # Main article containers
+            ['article', '[itemprop="articleBody"]', '.article-content', '.article-body'],
+            
+            # Content wrappers
+            ['.content', '.story-body', '.post-content', '.page-content', '.entry-content'],
+            
+            # More specific selectors
+            ['.main-content', '.story', '.article__body', '.article-text', '.story-text'],
+            
+            # Very specific selectors for common sites
+            ['.story__body', '.article__content', '.entry__body', '.c-entry-content', '.post__content']
+        ]
+        
+        # Try each selector group
+        for selectors in selector_groups:
+            for selector in selectors:
+                try:
+                    element = soup.select_one(selector)
+                    if element:
+                        # Try to get paragraphs within this container
+                        paragraphs = element.find_all('p')
+                        if paragraphs:
+                            content = "\n\n".join([p.get_text().strip() for p in paragraphs if len(p.get_text().strip()) > 20])
+                            if len(content) > len(best_content):
+                                best_content = content
+                        
+                        # If no paragraphs or content still too short, get all text
+                        if len(best_content) < 200:
+                            content = element.get_text().strip()
+                            # Clean up content (remove extra whitespace)
+                            content = re.sub(r'\s+', ' ', content)
+                            content = re.sub(r'\n\s*\n', '\n\n', content)
+                            if len(content) > len(best_content):
+                                best_content = content
+                except Exception as e:
+                    continue
+        
+        return best_content
+
     def _initialize_selenium(self):
         """Initialize Selenium WebDriver for Hugging Face Spaces if needed"""
         if not self.use_selenium:
@@ -404,7 +535,7 @@ class ContentScraper:
                             return {
                                 'title': driver.title,
                                 'content': article_text,
-                                'html': driver.page_source[:50000]  # Limit HTML size
+                                'html': driver.page_source[:20000]  # Limit HTML size
                             }
                 except:
                     continue
@@ -419,7 +550,7 @@ class ContentScraper:
                         return {
                             'title': driver.title,
                             'content': content,
-                            'html': driver.page_source[:50000]
+                            'html': driver.page_source[:20000]
                         }
             except:
                 pass
@@ -429,6 +560,50 @@ class ContentScraper:
             
         except Exception as e:
             logger.error(f"Selenium scraping failed: {e}")
+            return None
+    
+    def scrape_with_enhanced_fallbacks(self, url):
+        """
+        Enhanced scraping that tries multiple methods to extract content
+        """
+        try:
+            # First try standard request
+            response = requests.get(url, headers=self.headers, timeout=self.timeout)
+            if response.status_code != 200:
+                return None
+                
+            soup = BeautifulSoup(response.text, self.parser)
+            
+            # Try site-specific extractor first
+            domain = self._extract_domain(url)
+            site_extractor = self._get_site_specific_extractor(domain)
+            
+            content = ""
+            if site_extractor:
+                content = site_extractor(soup)
+                
+            # If site-specific extractor failed or content is too short
+            if not content or len(content) < 300:
+                # Try enhanced extraction with multiple selectors
+                content = self.extract_from_multiple_selectors(soup)
+                
+            # If still too short, try a more aggressive approach
+            if not content or len(content) < 300:
+                content = self._extract_text_content(soup)
+                
+            # If we've found substantial content
+            if content and len(content) > 300:
+                title = self._extract_title_from_html(response.text)
+                return {
+                    'title': title,
+                    'content': content,
+                    'html': None
+                }
+                
+            return None
+            
+        except Exception as e:
+            logger.error(f"Enhanced scraping failed: {e}")
             return None
     
     def _scrape_with_requests(self, url):
@@ -490,8 +665,8 @@ class ContentScraper:
                     'html': None
                 }
                 
-            # Try generic extraction methods
-            content = self._extract_article_content(soup)
+            # Try multiple extraction methods
+            content = self.extract_from_multiple_selectors(soup)
             
             if content and len(content) > 200:
                 return {
@@ -546,7 +721,6 @@ class ContentScraper:
         """Extract the title from HTML (optimized)"""
         try:
             # Try to extract title using regex first (faster)
-            import re
             title_match = re.search('<title[^>]*>(.*?)</title>', html_text, re.IGNORECASE)
             if title_match:
                 return title_match.group(1)
@@ -586,7 +760,6 @@ class ContentScraper:
                     content = element.get_text().strip()
                     if len(content) > 200:
                         # Clean up content (remove extra whitespace)
-                        import re
                         content = re.sub(r'\s+', ' ', content)
                         content = re.sub(r'\n\s*\n', '\n\n', content)
                         return content
@@ -626,14 +799,68 @@ class ContentScraper:
             text = soup.get_text(separator='\n')
             lines = [line.strip() for line in text.splitlines() if line.strip()]
             
-            # Filter out short lines
-            lines = [line for line in lines if len(line) > 30]
+            # Filter out short lines and remove duplicate/similar lines
+            filtered_lines = []
+            seen_lines = set()
+            for line in lines:
+                if len(line) > 30:
+                    # Simple deduplication - check first 10 chars to avoid similar headers/dates
+                    line_start = line[:10].lower()
+                    if line_start not in seen_lines:
+                        seen_lines.add(line_start)
+                        filtered_lines.append(line)
             
-            content = "\n\n".join(lines)
+            content = "\n\n".join(filtered_lines)
             return content
         except:
             return ""
     
+    def get_article_content(self, url):
+        """Get the content of an article with enhanced fallbacks"""
+        # Try cached version first
+        cached_content = self._get_cached_content(url)
+        if cached_content:
+            return cached_content
+        
+        # Match domain to scraper
+        domain = self._extract_domain(url)
+        logger.info(f"Scraping article: {url} from {domain}")
+        
+        # First try with regular requests method
+        content = self._scrape_with_requests(url)
+        
+        # If content is too short or extraction failed, try the enhanced method
+        if (not content or 
+            content.get('content') == "Failed to extract content" or 
+            content.get('content') == "Article behind paywall" or
+            len(content.get('content', '')) < 300):
+            
+            logger.info(f"Regular extraction failed or content too short, trying enhanced extraction for {url}")
+            enhanced_content = self.scrape_with_enhanced_fallbacks(url)
+            if enhanced_content and len(enhanced_content.get('content', '')) > 300:
+                content = enhanced_content
+        
+        # Fall back to Selenium only if requests fails AND Selenium is enabled
+        if (not content or 
+            content.get('content') == "Failed to extract content" or 
+            content.get('content') == "Article behind paywall" or
+            len(content.get('content', '')) < 300) and self.use_selenium:
+            
+            logger.info(f"Falling back to Selenium for {url}")
+            try:
+                selenium_content = self._scrape_with_selenium(url)
+                if selenium_content and len(selenium_content.get('content', '')) > 300:
+                    content = selenium_content
+            except Exception as e:
+                logger.warning(f"Selenium fallback failed for {url}: {e}")
+        
+        # Cache the content if we got something
+        if content and content.get('content') != "Failed to extract content" and len(content.get('content', '')) > 300:
+            self._cache_content(url, content)
+            return content
+        
+        return content  # May be None or error content
+        
     def scrape_article(self, article_data):
         """
         Scrape content for an article using its URL and title
@@ -660,6 +887,15 @@ class ContentScraper:
                 logger.error("Article data missing URL")
                 return article_data
                 
+            # Check if URL is properly formatted
+            if not url.startswith(('http://', 'https://')):
+                if url.startswith('www.'):
+                    url = 'https://' + url
+                else:
+                    url = 'https://www.' + url
+                article_data['url'] = url
+                logger.info(f"Fixed URL format: {url}")
+            
             # Try to get content from the URL
             content_result = self.get_article_content(url)
             
@@ -667,12 +903,19 @@ class ContentScraper:
                 # Update the article with the scraped content
                 article_data['content'] = content_result.get('content', '')
                 
+                # Check if content is substantial
+                if len(article_data['content']) < 300 and article_data['content'] != "Article behind paywall":
+                    # Try one more aggressive attempt
+                    enhanced_result = self.scrape_with_enhanced_fallbacks(url)
+                    if enhanced_result and len(enhanced_result.get('content', '')) > 300:
+                        article_data['content'] = enhanced_result.get('content', '')
+                
                 # If the article didn't have a title, use the one from content
                 if not article_data.get('title') and content_result.get('title'):
                     article_data['title'] = content_result.get('title')
                     
-                # Add scraping status
-                article_data['scraping_success'] = True
+                # Add scraping success indicator
+                article_data['scraping_success'] = len(article_data['content']) > 300
             else:
                 # If scraping failed, add a placeholder message
                 article_data['content'] = (
@@ -698,37 +941,6 @@ class ContentScraper:
                 }
             return article_data
     
-    def get_article_content(self, url):
-        """Get the content of an article with fallbacks"""
-        # Try cached version first
-        cached_content = self._get_cached_content(url)
-        if cached_content:
-            return cached_content
-        
-        # Match domain to scraper
-        domain = self._extract_domain(url)
-        logger.info(f"Scraping article: {url} from {domain}")
-        
-        # First try with requests (faster and more reliable for most sites)
-        content = self._scrape_with_requests(url)
-        
-        # Fall back to Selenium only if requests fails AND Selenium is enabled
-        if (not content or content.get('content') == "Failed to extract content") and self.use_selenium:
-            logger.info(f"Falling back to Selenium for {url}")
-            try:
-                selenium_content = self._scrape_with_selenium(url)
-                if selenium_content:
-                    content = selenium_content
-            except Exception as e:
-                logger.warning(f"Selenium fallback failed for {url}: {e}")
-        
-        # Cache the content if we got something
-        if content and content.get('content') != "Failed to extract content":
-            self._cache_content(url, content)
-            return content
-        
-        return content  # May be None or error content
-        
     def generate_simple_content(self, title, url):
         """Generate a simple content object when all scraping methods fail"""
         return {
