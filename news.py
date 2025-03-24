@@ -111,10 +111,6 @@ def get_simple_news_fallback(company, num_articles=5):
         logger.error(f"Fallback news generation failed: {e}")
         return []
 
-
-
-
-
 def process_search(news_fetcher, content_scraper, summary_gen, company, num_articles, enable_tts):
     """
     Process search and update session state with results
@@ -190,56 +186,36 @@ def process_search(news_fetcher, content_scraper, summary_gen, company, num_arti
                 logger.info(f"Processing article {idx+1}: {title[:30]}... from {url}")
                 
                 try:
-                    # Check cache first (faster than going through scrape_article)
-                    cached_content = None
-                    try:
-                        if url in content_scraper.cache:
-                            content, timestamp = content_scraper.cache[url]
-                            if datetime.now() - timestamp < content_scraper.cache_duration:
-                                cached_content = content
-                                logger.info(f"Using cached content for {url}")
-                    except:
-                        pass
-                    
-                    # Get content for this specific URL only
-                    if cached_content:
-                        content = cached_content
-                    else:
-                        content = content_scraper.scrape_article(url)
+                    # Scrape content for this article
+                    processed_article = content_scraper.scrape_article(article)
                     
                     # Generate summary if content was successfully retrieved
-                    # Process shorter content more quickly with simpler summary
-                    if content and content != "Failed to extract content" and len(content) > 300:
+                    if processed_article.get('content') and processed_article.get('content') != "Failed to extract content" and len(processed_article.get('content', '')) > 300:
                         try:
-                            if len(content) > 10000:
-                                summary = summary_gen.generate_summary(content)
+                            if len(processed_article['content']) > 10000:
+                                summary = summary_gen.generate_summary(processed_article['content'])
                             else:
                                 # Use faster summarization method
-                                summary = summary_gen.fast_summarize(content)
+                                summary = summary_gen.fast_summarize(processed_article['content'])
                                 
                             summary += f"\n\n[Article from: {article.get('source', 'Unknown')}]"
+                            processed_article['summary'] = summary
                         except Exception as e:
                             logger.error(f"Summary generation failed: {e}")
-                            summary = content[:500] + "..."
+                            processed_article['summary'] = processed_article['content'][:500] + "..."
                     else:
-                        if not content:
-                            summary = "Content could not be retrieved."
-                        elif content == "Failed to extract content" or content == "Article behind paywall":
-                            summary = f"{content}. Try visiting the original article."
+                        if not processed_article.get('content'):
+                            processed_article['summary'] = "Content could not be retrieved."
+                        elif processed_article.get('content') == "Failed to extract content" or processed_article.get('content') == "Article behind paywall":
+                            processed_article['summary'] = f"{processed_article.get('content')}. Try visiting the original article."
                         else:
-                            summary = "Content is too short to summarize."
+                            processed_article['summary'] = "Content is too short to summarize."
                     
-                    # Create article data with unique identifier
-                    article_data = {
-                        'title': title,
-                        'url': url,
-                        'source': article.get('source', 'Unknown'),
-                        'timestamp': article.get('timestamp', ''),
-                        'content': content,
-                        'summary': summary,
-                        'article_id': f"article_{idx}_{hash(url) % 10000}"  # Add unique ID
-                    }
-                    processed_articles.append(article_data)
+                    # Make sure article has a unique ID
+                    if 'article_id' not in processed_article:
+                        processed_article['article_id'] = f"article_{idx}_{hash(url) % 10000}"
+                        
+                    processed_articles.append(processed_article)
                     
                     # Save less frequently
                     if idx % 5 == 0:
