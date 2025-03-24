@@ -1,5 +1,5 @@
 """
-Content scraper for News Analyzer - optimized for Hugging Face Spaces
+Optimized Content scraper for News Analyzer - faster and more reliable
 """
 import os
 import time
@@ -9,30 +9,36 @@ import hashlib
 from pathlib import Path
 from datetime import datetime, timedelta
 import random
-import backoff
-
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
+import requests
+from urllib.parse import urlparse
+from bs4 import BeautifulSoup
 
 # Configure logging
 logger = logging.getLogger("ContentScraper")
 
 class ContentScraper:
-    """Scrapes content from various news sources"""
+    """Scrapes content from various news sources with optimized performance"""
     
-    def __init__(self, use_selenium=True, cache_dir="./content_cache", cache_duration_days=1):
-        """Initialize the content scraper"""
-        self.use_selenium = use_selenium
+    def __init__(self, use_selenium=False, cache_dir="./content_cache", cache_duration_days=1):
+        """Initialize the content scraper with optimized defaults"""
+        self.use_selenium = use_selenium  # Default to False for better performance
         self.cache_dir = Path(cache_dir)
         self.cache_duration_days = cache_duration_days
         self.cache = {}
         self.driver = None
-        self.timeout = 15  # seconds
+        self.timeout = 10  # Reduced timeout for faster failures
         self._load_cache()
+        
+        # Initialize BeautifulSoup parser once
+        self.parser = "html.parser"  # Lighter than lxml
+        
+        # Common headers to simulate a real browser
+        self.headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Connection': 'keep-alive',
+        }
         
     def __del__(self):
         """Clean up resources"""
@@ -88,58 +94,54 @@ class ContentScraper:
             "content": content,
             "timestamp": datetime.now().isoformat()
         }
-        self._save_cache()
+        # Don't save cache immediately - will be saved periodically
     
     def _extract_domain(self, url):
-        """Extract the domain from a URL"""
-        from urllib.parse import urlparse
-        
+        """Extract the domain from a URL (optimized)"""
         try:
-            parsed_url = urlparse(url)
-            domain = parsed_url.netloc
+            domain = urlparse(url).netloc
             return domain
         except:
-            # If parsing fails, extract domain with a simpler approach
+            # Fallback if parsing fails
             if "://" in url:
                 domain = url.split("://")[1].split("/")[0]
                 return domain
             return url.split("/")[0]
     
     def _initialize_selenium(self):
-        """Initialize Selenium WebDriver for Hugging Face Spaces"""
+        """Initialize Selenium WebDriver for Hugging Face Spaces if needed"""
+        if not self.use_selenium:
+            return None
+            
         if self.driver is not None:
             return self.driver
             
-        chrome_options = Options()
-        
-        # Critical flags for Hugging Face Spaces
-        chrome_options.add_argument("--headless")
-        chrome_options.add_argument("--disable-gpu")
-        chrome_options.add_argument("--no-sandbox")
-        chrome_options.add_argument("--disable-dev-shm-usage")
-        
-        # Add random user agent to avoid detection
-        user_agents = [
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36',
-            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.2 Safari/605.1.15',
-            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/111.0.0.0 Safari/537.36'
-        ]
-        chrome_options.add_argument(f"user-agent={random.choice(user_agents)}")
-        
-        # Disable automation flags to avoid detection
-        chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-        
-        # Disable images for performance
-        chrome_prefs = {
-            "profile.default_content_settings": {"images": 2},
-            "profile.managed_default_content_settings": {"images": 2}
-        }
-        chrome_options.add_experimental_option("prefs", chrome_prefs)
-        
-        # Determine environment (Hugging Face Spaces vs local)
-        is_huggingface = os.environ.get('SPACE_ID') is not None
-        
         try:
+            from selenium import webdriver
+            from selenium.webdriver.chrome.options import Options
+            from selenium.webdriver.chrome.service import Service
+            
+            chrome_options = Options()
+            
+            # Critical flags for Hugging Face Spaces
+            chrome_options.add_argument("--headless")
+            chrome_options.add_argument("--disable-gpu")
+            chrome_options.add_argument("--no-sandbox")
+            chrome_options.add_argument("--disable-dev-shm-usage")
+            chrome_options.add_argument(f"user-agent={self.headers['User-Agent']}")
+            
+            # Disable automation flags to avoid detection
+            chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+            
+            # Disable images for performance
+            chrome_options.add_experimental_option("prefs", {
+                "profile.default_content_settings": {"images": 2},
+                "profile.managed_default_content_settings": {"images": 2}
+            })
+            
+            # Determine environment (Hugging Face Spaces vs local)
+            is_huggingface = os.environ.get('SPACE_ID') is not None
+            
             if is_huggingface:
                 # On Hugging Face Spaces, use system chromium-browser
                 chrome_options.binary_location = "/usr/bin/chromium-browser"
@@ -154,7 +156,7 @@ class ContentScraper:
             
             # Execute stealth JS to avoid detection
             self.driver.execute_cdp_cmd('Network.setUserAgentOverride', {
-                "userAgent": random.choice(user_agents)
+                "userAgent": self.headers['User-Agent']
             })
             self.driver.execute_script(
                 "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
@@ -164,48 +166,22 @@ class ContentScraper:
             
         except Exception as e:
             logger.error(f"Failed to initialize WebDriver: {str(e)}")
+            self.use_selenium = False  # Disable selenium for future attempts
             return None
     
-    def _scrape_with_domain_rules(self, url, domain):
-        """Scrape content using domain-specific rules"""
-        # This can be expanded with domain-specific rules
-        
-        # Google News redirects to actual news sites
-        if "news.google.com" in domain:
-            return None
-            
-        # Default: return None to try other methods
-        return None
-    
-    @backoff.on_exception(backoff.expo, RuntimeError, max_tries=2)
     def _scrape_with_selenium(self, url):
-        """Scrape content using Selenium"""
+        """Scrape content using Selenium (only called if use_selenium=True)"""
         driver = self._initialize_selenium()
         if not driver:
-            raise RuntimeError("WebDriver initialization failed")
+            return None
         
         try:
             driver.get(url)
             
-            # Give the page time to load and execute JavaScript
-            time.sleep(3)
-            
-            # Try to dismiss any popups
-            try:
-                from selenium.webdriver.common.keys import Keys
-                from selenium.webdriver.common.action_chains import ActionChains
-                ActionChains(driver).send_keys(Keys.ESCAPE).perform()
-            except:
-                pass
-                
-            # Scroll down to load lazy content
-            driver.execute_script("window.scrollTo(0, document.body.scrollHeight/3);")
-            time.sleep(1)
+            # Give the page minimal time to load
+            time.sleep(2)
             
             # Try to extract content using selectors
-            content = None
-            
-            # 1. Look for article content containers
             selectors = [
                 "article", "[itemprop='articleBody']", ".article-content", 
                 ".article-body", ".story-body", ".post-content", ".content",
@@ -214,6 +190,7 @@ class ContentScraper:
             
             for selector in selectors:
                 try:
+                    from selenium.webdriver.common.by import By
                     elements = driver.find_elements(By.CSS_SELECTOR, selector)
                     if elements:
                         article_text = elements[0].text
@@ -221,13 +198,14 @@ class ContentScraper:
                             return {
                                 'title': driver.title,
                                 'content': article_text,
-                                'html': driver.page_source
+                                'html': driver.page_source[:50000]  # Limit HTML size
                             }
-                except Exception as e:
+                except:
                     continue
             
-            # 2. Extract all paragraphs as a fallback
+            # Extract paragraphs as a fallback
             try:
+                from selenium.webdriver.common.by import By
                 paragraphs = driver.find_elements(By.TAG_NAME, "p")
                 if paragraphs:
                     content = "\n\n".join([p.text for p in paragraphs if len(p.text) > 30])
@@ -235,101 +213,208 @@ class ContentScraper:
                         return {
                             'title': driver.title,
                             'content': content,
-                            'html': driver.page_source
+                            'html': driver.page_source[:50000]
                         }
-            except Exception as e:
+            except:
                 pass
-                
-            # 3. Get main text as a last resort
-            body_text = driver.find_element(By.TAG_NAME, "body").text
-            if body_text and len(body_text) > 200:
-                # Try to clean it up a bit
-                lines = body_text.split("\n")
-                filtered_lines = [line for line in lines if len(line.strip()) > 30]
-                content = "\n\n".join(filtered_lines)
-                
-                return {
-                    'title': driver.title,
-                    'content': content,
-                    'html': driver.page_source
-                }
-                
-            # If we reach this point, we couldn't extract meaningful content
+            
+            # Return None to fall back to requests method
             return None
             
         except Exception as e:
             logger.error(f"Selenium scraping failed: {e}")
-            raise RuntimeError(f"Selenium scraping failed: {e}")
+            return None
     
     def _scrape_with_requests(self, url):
-        """Simple requests-based scraper as final fallback"""
+        """Simple requests-based scraper (primary method)"""
         try:
-            import requests
-            from bs4 import BeautifulSoup
+            # Add random sleep to avoid rate limiting
+            time.sleep(random.uniform(0.1, 0.5))
             
-            # Use a realistic user agent
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.5',
-                'Connection': 'keep-alive',
-                'Upgrade-Insecure-Requests': '1',
-                'Cache-Control': 'max-age=0'
-            }
+            # Add additional headers if domain requires them
+            domain = self._extract_domain(url)
+            special_headers = {}
             
-            response = requests.get(url, headers=headers, timeout=15)
+            # Special headers for some sites
+            if 'nytimes.com' in domain:
+                special_headers = {'Referer': 'https://www.google.com/'}
+            elif 'wsj.com' in domain:
+                special_headers = {'Referer': 'https://www.facebook.com/'}
+            
+            # Combine headers
+            headers = {**self.headers, **special_headers}
+            
+            # Make request with timeout
+            response = requests.get(url, headers=headers, timeout=self.timeout)
+            
             if response.status_code != 200:
+                logger.warning(f"Failed to fetch {url}: HTTP {response.status_code}")
                 return None
+            
+            # Check for paywalls or subscription notices
+            content_lower = response.text.lower()
+            paywall_indicators = ['subscribe now', 'subscription required', 'premium content', 
+                                'to continue reading', 'create an account', 'sign up to read',
+                                'subscribe to read', 'premium subscriber', 'to continue reading']
+            
+            if any(indicator in content_lower for indicator in paywall_indicators):
+                # Check if there's at least some content to extract
+                if len(content_lower) < 1000:
+                    return {
+                        'title': self._extract_title_from_html(response.text),
+                        'content': "Article behind paywall",
+                        'html': response.text[:20000]  # Limit size
+                    }
+            
+            # Use BeautifulSoup to parse the HTML
+            soup = BeautifulSoup(response.text, self.parser)
+            
+            # Extract the title
+            title = self._extract_title_from_html(response.text)
                 
-            soup = BeautifulSoup(response.text, 'lxml')
+            # Optimize content extraction - target specific elements first
+            content = self._extract_article_content(soup)
             
-            # Remove script and style elements
-            for script in soup(["script", "style"]):
-                script.decompose()
-                
-            # Try to find main content containers
-            content = ""
-            selectors = ['article', '.article', '.post', 'main', '#main-content', 
-                        '[itemprop="articleBody"]', '.article-body', '.story-body']
-            
-            for selector in selectors:
-                if article := soup.select_one(selector):
-                    paragraphs = article.find_all("p")
-                    if paragraphs:
-                        content = "\n\n".join([p.get_text().strip() for p in paragraphs 
-                                            if len(p.get_text().strip()) > 30])
-                        if content:
-                            break
-            
-            # If no structured content found, try extracting all paragraphs
-            if not content:
-                paragraphs = soup.find_all("p")
-                good_paragraphs = [p.get_text().strip() for p in paragraphs 
-                                if len(p.get_text().strip()) > 30]
-                content = "\n\n".join(good_paragraphs)
-            
-            # If still no content, try as a last resort
-            if not content:
-                # Strip HTML tags and get text content
-                text = soup.get_text(separator='\n')
-                # Split into lines and filter out short ones
-                lines = text.split('\n')
-                content = "\n\n".join([line.strip() for line in lines 
-                                    if len(line.strip()) > 50])
-                
-            # Check if we have meaningful content
             if content and len(content) > 200:
-                title = soup.title.get_text() if soup.title else "No title found"
                 return {
                     'title': title,
                     'content': content,
-                    'html': response.text
+                    'html': response.text[:20000]  # Limit size for memory
+                }
+            
+            # If we couldn't extract content, try a different approach
+            content = self._extract_paragraphs(soup)
+            
+            if content and len(content) > 200:
+                return {
+                    'title': title,
+                    'content': content,
+                    'html': response.text[:20000]
                 }
                 
-            return None
+            # If still no content, use a more aggressive approach
+            content = self._extract_text_content(soup)
+            
+            if content and len(content) > 200:
+                return {
+                    'title': title,
+                    'content': content,
+                    'html': response.text[:20000]
+                }
+                
+            # If we reach here, extraction failed
+            return {
+                'title': title,
+                'content': "Failed to extract content",
+                'html': "<html><body><p>Content extraction failed</p></body></html>"
+            }
+            
+        except requests.exceptions.Timeout:
+            logger.error(f"Request timeout for {url}")
+            return {
+                'title': "Timeout Error",
+                'content': f"Request timed out for {url}",
+                'html': "<html><body><p>Request timed out</p></body></html>"
+            }
         except Exception as e:
             logger.error(f"Request-based scraping failed: {e}")
-            return None
+            return {
+                'title': "Error",
+                'content': f"Error scraping content: {str(e)}",
+                'html': "<html><body><p>Error scraping content</p></body></html>"
+            }
+    
+    def _extract_title_from_html(self, html_text):
+        """Extract the title from HTML (optimized)"""
+        try:
+            # Try to extract title using regex first (faster)
+            import re
+            title_match = re.search('<title[^>]*>(.*?)</title>', html_text, re.IGNORECASE)
+            if title_match:
+                return title_match.group(1)
+            
+            # If regex fails, use BeautifulSoup
+            soup = BeautifulSoup(html_text, self.parser)
+            if soup.title:
+                return soup.title.get_text().strip()
+                
+            # Try meta tags
+            meta_title = soup.find("meta", property="og:title")
+            if meta_title and meta_title.get("content"):
+                return meta_title["content"].strip()
+                
+            return "Unknown Title"
+        except:
+            return "Unknown Title"
+    
+    def _extract_article_content(self, soup):
+        """Extract article content using common article containers"""
+        # Try to find main content containers
+        for selector in ['article', '[itemprop="articleBody"]', '.article-content', 
+                        '.article-body', '.story-body', '.post-content', '.content',
+                        '#content', '.main-content', '.entry-content']:
+            try:
+                element = soup.select_one(selector)
+                if element:
+                    # First try to get all paragraphs within this container
+                    paragraphs = element.find_all('p')
+                    if paragraphs:
+                        content = "\n\n".join([p.get_text().strip() for p in paragraphs 
+                                            if len(p.get_text().strip()) > 20])
+                        if len(content) > 200:
+                            return content
+                    
+                    # If no paragraphs or content too short, get all text
+                    content = element.get_text().strip()
+                    if len(content) > 200:
+                        # Clean up content (remove extra whitespace)
+                        import re
+                        content = re.sub(r'\s+', ' ', content)
+                        content = re.sub(r'\n\s*\n', '\n\n', content)
+                        return content
+            except:
+                continue
+        
+        return ""
+    
+    def _extract_paragraphs(self, soup):
+        """Extract all paragraphs from the page"""
+        try:
+            paragraphs = soup.find_all('p')
+            
+            # Filter out short paragraphs and navigation elements
+            filtered_paragraphs = []
+            for p in paragraphs:
+                text = p.get_text().strip()
+                if len(text) > 20:
+                    # Check if not in a nav, header, or footer element
+                    if not any(parent.name in ['nav', 'header', 'footer'] 
+                              for parent in p.parents):
+                        filtered_paragraphs.append(text)
+            
+            content = "\n\n".join(filtered_paragraphs)
+            return content if len(content) > 200 else ""
+        except:
+            return ""
+    
+    def _extract_text_content(self, soup):
+        """More aggressive text extraction as a last resort"""
+        try:
+            # Remove script, style elements
+            for element in soup(['script', 'style', 'nav', 'header', 'footer', 'aside']):
+                element.decompose()
+            
+            # Get text and split into lines
+            text = soup.get_text(separator='\n')
+            lines = [line.strip() for line in text.splitlines() if line.strip()]
+            
+            # Filter out short lines
+            lines = [line for line in lines if len(line) > 30]
+            
+            content = "\n\n".join(lines)
+            return content
+        except:
+            return ""
     
     def scrape_article(self, article_data):
         """
@@ -399,7 +484,7 @@ class ContentScraper:
             return article_data
     
     def get_article_content(self, url):
-        """Get the content of an article with fallbacks for Hugging Face Spaces"""
+        """Get the content of an article with fallbacks"""
         # Try cached version first
         cached_content = self._get_cached_content(url)
         if cached_content:
@@ -409,29 +494,25 @@ class ContentScraper:
         domain = self._extract_domain(url)
         logger.info(f"Scraping article: {url} with domain: {domain}")
         
-        # Try several methods in sequence
-        # 1. First try using domain-specific rules
-        content = self._scrape_with_domain_rules(url, domain)
+        # First try with requests (faster and more reliable for most sites)
+        content = self._scrape_with_requests(url)
         
-        # 2. If domain rules failed, try Selenium
-        if content is None and self.use_selenium:
-            logger.info(f"Trying fallback method: selenium for {url}")
+        # Fall back to Selenium only if requests fails AND Selenium is enabled
+        if (not content or content.get('content') == "Failed to extract content") and self.use_selenium:
+            logger.info(f"Falling back to Selenium for {url}")
             try:
-                content = self._scrape_with_selenium(url)
+                selenium_content = self._scrape_with_selenium(url)
+                if selenium_content:
+                    content = selenium_content
             except Exception as e:
-                logger.warning(f"Fallback method selenium failed for {url}: {e}")
-        
-        # 3. If Selenium failed, try simple requests
-        if content is None:
-            logger.info(f"Trying final fallback: requests for {url}")
-            content = self._scrape_with_requests(url)
+                logger.warning(f"Selenium fallback failed for {url}: {e}")
         
         # Cache the content if we got something
-        if content:
+        if content and content.get('content') != "Failed to extract content":
             self._cache_content(url, content)
             return content
         
-        return None
+        return content  # May be None or error content
         
     def generate_simple_content(self, title, url):
         """Generate a simple content object when all scraping methods fail"""
