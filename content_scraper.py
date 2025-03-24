@@ -331,6 +331,56 @@ class ContentScraper:
             logger.error(f"Request-based scraping failed: {e}")
             return None
     
+    # Add the missing scrape_article method
+    def scrape_article(self, article_data):
+        """
+        Scrape content for an article using its URL and title
+        
+        Parameters:
+        - article_data: dict containing at minimum 'url' and 'title'
+        
+        Returns:
+        - dict: The updated article data with content added
+        """
+        try:
+            url = article_data.get('url')
+            if not url:
+                logger.error("Article data missing URL")
+                return article_data
+                
+            # Try to get content from the URL
+            content_result = self.get_article_content(url)
+            
+            if content_result:
+                # Update the article with the scraped content
+                article_data['content'] = content_result.get('content', '')
+                
+                # If the article didn't have a title, use the one from content
+                if not article_data.get('title') and content_result.get('title'):
+                    article_data['title'] = content_result.get('title')
+                    
+                # Store HTML content if needed for future processing
+                article_data['html'] = content_result.get('html', '')
+                
+                # Add scraping status
+                article_data['scraping_success'] = True
+            else:
+                # If scraping failed, add a placeholder message
+                article_data['content'] = (
+                    f"Unable to retrieve full content for this article. "
+                    f"Please visit the original source: {url}"
+                )
+                article_data['scraping_success'] = False
+                
+            return article_data
+            
+        except Exception as e:
+            logger.error(f"Error scraping article: {e}")
+            # Return the original article data if scraping fails
+            article_data['content'] = f"Error retrieving content: {str(e)}"
+            article_data['scraping_success'] = False
+            return article_data
+    
     def get_article_content(self, url):
         """Get the content of an article with fallbacks for Hugging Face Spaces"""
         # Try cached version first
