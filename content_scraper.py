@@ -1,5 +1,5 @@
 """
-Optimized Content scraper for News Analyzer - faster and more reliable
+Optimized Content scraper for News Analyzer - with site-specific extractors
 """
 import os
 import time
@@ -107,6 +107,212 @@ class ContentScraper:
                 domain = url.split("://")[1].split("/")[0]
                 return domain
             return url.split("/")[0]
+
+    def _get_site_specific_extractor(self, domain):
+        """Get site-specific extraction function based on domain"""
+        extractors = {
+            'reuters.com': self._extract_reuters,
+            'apnews.com': self._extract_ap,
+            'bbc.com': self._extract_bbc,
+            'bbc.co.uk': self._extract_bbc,
+            'npr.org': self._extract_npr,
+            'theguardian.com': self._extract_guardian,
+            'aljazeera.com': self._extract_aljazeera,
+            'cnbc.com': self._extract_cnbc,
+            'usatoday.com': self._extract_usatoday,
+            'nytimes.com': self._extract_nytimes,
+            'washingtonpost.com': self._extract_wapo,
+            'news.yahoo.com': self._extract_yahoo,
+            'cnn.com': self._extract_cnn,
+            'foxnews.com': self._extract_fox
+        }
+        
+        for site_domain, extractor in extractors.items():
+            if site_domain in domain:
+                return extractor
+        
+        return None
+    
+    def _extract_reuters(self, soup):
+        """Extract content from Reuters articles"""
+        # Try multiple selectors for Reuters articles
+        content_div = soup.select_one('[data-testid="article-body"]')
+        if not content_div:
+            content_div = soup.select_one('.article-body__content__17Yit')
+        
+        if content_div:
+            paragraphs = content_div.find_all('p')
+            content = '\n\n'.join([p.get_text().strip() for p in paragraphs if len(p.get_text().strip()) > 20])
+            return content
+        return ""
+    
+    def _extract_ap(self, soup):
+        """Extract content from AP News articles"""
+        content_div = soup.select_one('.Article')
+        if not content_div:
+            content_div = soup.select_one('article')
+        
+        if content_div:
+            paragraphs = content_div.find_all('p')
+            content = '\n\n'.join([p.get_text().strip() for p in paragraphs if len(p.get_text().strip()) > 20])
+            return content
+        return ""
+    
+    def _extract_bbc(self, soup):
+        """Extract content from BBC articles"""
+        article_body = soup.select_one('article')
+        if article_body:
+            paragraphs = article_body.select('p[data-component="text-block"]')
+            if not paragraphs:
+                paragraphs = article_body.select('div[data-component="text-block"]')
+            if not paragraphs:
+                paragraphs = article_body.find_all('p')
+                
+            content = '\n\n'.join([p.get_text().strip() for p in paragraphs if len(p.get_text().strip()) > 20])
+            return content
+        return ""
+    
+    def _extract_npr(self, soup):
+        """Extract content from NPR articles"""
+        article = soup.select_one('article')
+        if article:
+            # Try to find the main content area
+            content_div = article.select_one('.storytext')
+            if not content_div:
+                content_div = article
+                
+            paragraphs = content_div.find_all('p')
+            content = '\n\n'.join([p.get_text().strip() for p in paragraphs if len(p.get_text().strip()) > 20])
+            return content
+        return ""
+    
+    def _extract_guardian(self, soup):
+        """Extract content from The Guardian articles"""
+        content_div = soup.select_one('.content__article-body')
+        if not content_div:
+            content_div = soup.select_one('article')
+            
+        if content_div:
+            paragraphs = content_div.find_all('p')
+            content = '\n\n'.join([p.get_text().strip() for p in paragraphs if len(p.get_text().strip()) > 20])
+            return content
+        return ""
+    
+    def _extract_aljazeera(self, soup):
+        """Extract content from Al Jazeera articles"""
+        content_div = soup.select_one('.wysiwyg--all-content')
+        if not content_div:
+            content_div = soup.select_one('article')
+            
+        if content_div:
+            paragraphs = content_div.find_all('p')
+            content = '\n\n'.join([p.get_text().strip() for p in paragraphs if len(p.get_text().strip()) > 20])
+            return content
+        return ""
+    
+    def _extract_cnbc(self, soup):
+        """Extract content from CNBC articles"""
+        article_body = soup.select_one('.ArticleBody-articleBody')
+        if not article_body:
+            article_body = soup.select_one('article')
+            
+        if article_body:
+            paragraphs = article_body.find_all('p')
+            content = '\n\n'.join([p.get_text().strip() for p in paragraphs if len(p.get_text().strip()) > 20])
+            return content
+        return ""
+    
+    def _extract_usatoday(self, soup):
+        """Extract content from USA Today articles"""
+        content_div = soup.select_one('.gnt_ar_b')
+        if not content_div:
+            content_div = soup.select_one('article')
+            
+        if content_div:
+            paragraphs = content_div.find_all('p')
+            content = '\n\n'.join([p.get_text().strip() for p in paragraphs if len(p.get_text().strip()) > 20])
+            return content
+        return ""
+    
+    def _extract_nytimes(self, soup):
+        """Extract content from NY Times articles (might be behind paywall)"""
+        content_div = soup.select_one('article')
+        if content_div:
+            # Check for paywall
+            paywall = soup.select_one('#gateway-content') or soup.select_one('.css-gx5sib')
+            if paywall:
+                # Try to at least get the first paragraph/summary
+                initial_paras = content_div.select('p:nth-child(-n+3)')
+                if initial_paras:
+                    content = '\n\n'.join([p.get_text().strip() for p in initial_paras if len(p.get_text()) > 20])
+                    content += "\n\n[Article continues behind paywall]"
+                    return content
+                return "Article behind paywall"
+            
+            paragraphs = content_div.select('p.css-g5piaz')
+            if not paragraphs:
+                paragraphs = content_div.find_all('p')
+                
+            content = '\n\n'.join([p.get_text().strip() for p in paragraphs if len(p.get_text().strip()) > 20])
+            return content
+        return ""
+    
+    def _extract_wapo(self, soup):
+        """Extract content from Washington Post articles"""
+        content_div = soup.select_one('article')
+        if content_div:
+            # Check for paywall
+            paywall = soup.select_one('.paywall')
+            if paywall:
+                return "Article behind paywall"
+                
+            paragraphs = content_div.select('.article-body p')
+            if not paragraphs:
+                paragraphs = content_div.find_all('p')
+                
+            content = '\n\n'.join([p.get_text().strip() for p in paragraphs if len(p.get_text().strip()) > 20])
+            return content
+        return ""
+    
+    def _extract_yahoo(self, soup):
+        """Extract content from Yahoo News articles"""
+        content_div = soup.select_one('.caas-body')
+        if not content_div:
+            content_div = soup.select_one('article')
+            
+        if content_div:
+            paragraphs = content_div.find_all('p')
+            content = '\n\n'.join([p.get_text().strip() for p in paragraphs if len(p.get_text().strip()) > 20])
+            return content
+        return ""
+    
+    def _extract_cnn(self, soup):
+        """Extract content from CNN articles"""
+        content_div = soup.select_one('.article__content')
+        if not content_div:
+            content_div = soup.select_one('.zn-body__paragraph')
+            
+        if content_div:
+            paragraphs = content_div.find_all('p')
+            content = '\n\n'.join([p.get_text().strip() for p in paragraphs if len(p.get_text().strip()) > 20])
+            return content
+        elif soup.select('.zn-body__paragraph'):  # Alternative CNN format
+            paragraphs = soup.select('.zn-body__paragraph')
+            content = '\n\n'.join([p.get_text().strip() for p in paragraphs if len(p.get_text().strip()) > 20])
+            return content
+        return ""
+    
+    def _extract_fox(self, soup):
+        """Extract content from Fox News articles"""
+        article_body = soup.select_one('.article-body')
+        if not article_body:
+            article_body = soup.select_one('article')
+            
+        if article_body:
+            paragraphs = article_body.find_all('p')
+            content = '\n\n'.join([p.get_text().strip() for p in paragraphs if len(p.get_text().strip()) > 20])
+            return content
+        return ""
     
     def _initialize_selenium(self):
         """Initialize Selenium WebDriver for Hugging Face Spaces if needed"""
@@ -229,7 +435,7 @@ class ContentScraper:
         """Simple requests-based scraper (primary method)"""
         try:
             # Add random sleep to avoid rate limiting
-            time.sleep(random.uniform(0.1, 0.5))
+            time.sleep(random.uniform(0.1, 0.3))
             
             # Add additional headers if domain requires them
             domain = self._extract_domain(url)
@@ -257,29 +463,41 @@ class ContentScraper:
                                 'to continue reading', 'create an account', 'sign up to read',
                                 'subscribe to read', 'premium subscriber', 'to continue reading']
             
-            if any(indicator in content_lower for indicator in paywall_indicators):
-                # Check if there's at least some content to extract
-                if len(content_lower) < 1000:
-                    return {
-                        'title': self._extract_title_from_html(response.text),
-                        'content': "Article behind paywall",
-                        'html': response.text[:20000]  # Limit size
-                    }
-            
-            # Use BeautifulSoup to parse the HTML
-            soup = BeautifulSoup(response.text, self.parser)
+            has_paywall = any(indicator in content_lower for indicator in paywall_indicators)
             
             # Extract the title
             title = self._extract_title_from_html(response.text)
+            
+            # Create a BeautifulSoup object
+            soup = BeautifulSoup(response.text, self.parser)
+            
+            # First try site-specific extractor
+            site_extractor = self._get_site_specific_extractor(domain)
+            if site_extractor:
+                content = site_extractor(soup)
+                if content and len(content) > 200:
+                    return {
+                        'title': title,
+                        'content': content,
+                        'html': None  # Don't store HTML to save memory
+                    }
+            
+            # If site-specific extractor failed or if content might be behind paywall
+            if has_paywall and (not content or len(content) < 500):
+                return {
+                    'title': title,
+                    'content': "Article behind paywall",
+                    'html': None
+                }
                 
-            # Optimize content extraction - target specific elements first
+            # Try generic extraction methods
             content = self._extract_article_content(soup)
             
             if content and len(content) > 200:
                 return {
                     'title': title,
                     'content': content,
-                    'html': response.text[:20000]  # Limit size for memory
+                    'html': None  # Don't store HTML to save memory
                 }
             
             # If we couldn't extract content, try a different approach
@@ -289,7 +507,7 @@ class ContentScraper:
                 return {
                     'title': title,
                     'content': content,
-                    'html': response.text[:20000]
+                    'html': None
                 }
                 
             # If still no content, use a more aggressive approach
@@ -299,14 +517,14 @@ class ContentScraper:
                 return {
                     'title': title,
                     'content': content,
-                    'html': response.text[:20000]
+                    'html': None
                 }
                 
             # If we reach here, extraction failed
             return {
                 'title': title,
                 'content': "Failed to extract content",
-                'html': "<html><body><p>Content extraction failed</p></body></html>"
+                'html': None
             }
             
         except requests.exceptions.Timeout:
@@ -314,14 +532,14 @@ class ContentScraper:
             return {
                 'title': "Timeout Error",
                 'content': f"Request timed out for {url}",
-                'html': "<html><body><p>Request timed out</p></body></html>"
+                'html': None
             }
         except Exception as e:
             logger.error(f"Request-based scraping failed: {e}")
             return {
                 'title': "Error",
                 'content': f"Error scraping content: {str(e)}",
-                'html': "<html><body><p>Error scraping content</p></body></html>"
+                'html': None
             }
     
     def _extract_title_from_html(self, html_text):
@@ -453,9 +671,6 @@ class ContentScraper:
                 if not article_data.get('title') and content_result.get('title'):
                     article_data['title'] = content_result.get('title')
                     
-                # Store HTML content if needed for future processing
-                article_data['html'] = content_result.get('html', '')
-                
                 # Add scraping status
                 article_data['scraping_success'] = True
             else:
@@ -492,7 +707,7 @@ class ContentScraper:
         
         # Match domain to scraper
         domain = self._extract_domain(url)
-        logger.info(f"Scraping article: {url} with domain: {domain}")
+        logger.info(f"Scraping article: {url} from {domain}")
         
         # First try with requests (faster and more reliable for most sites)
         content = self._scrape_with_requests(url)
@@ -519,5 +734,5 @@ class ContentScraper:
         return {
             'title': title,
             'content': f"Unable to retrieve full content for this article. Please visit the original source: {url}",
-            'html': "<html><body><p>Content not available</p></body></html>"
+            'html': None
         }
