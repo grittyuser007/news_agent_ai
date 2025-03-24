@@ -331,19 +331,28 @@ class ContentScraper:
             logger.error(f"Request-based scraping failed: {e}")
             return None
     
-    # Add the missing scrape_article method
     def scrape_article(self, article_data):
         """
         Scrape content for an article using its URL and title
         
         Parameters:
-        - article_data: dict containing at minimum 'url' and 'title'
+        - article_data: dict containing at minimum 'url' and 'title', or a string URL
         
         Returns:
         - dict: The updated article data with content added
         """
         try:
-            url = article_data.get('url')
+            # Check if article_data is a dictionary or string URL
+            if isinstance(article_data, str):
+                url = article_data
+                article_data = {
+                    'url': url,
+                    'title': 'Unknown Title'
+                }
+            else:
+                # Make sure article_data is a dictionary
+                url = article_data.get('url')
+            
             if not url:
                 logger.error("Article data missing URL")
                 return article_data
@@ -373,12 +382,20 @@ class ContentScraper:
                 article_data['scraping_success'] = False
                 
             return article_data
-            
+                
         except Exception as e:
             logger.error(f"Error scraping article: {e}")
             # Return the original article data if scraping fails
-            article_data['content'] = f"Error retrieving content: {str(e)}"
-            article_data['scraping_success'] = False
+            if isinstance(article_data, dict):
+                article_data['content'] = f"Error retrieving content: {str(e)}"
+                article_data['scraping_success'] = False
+            else:
+                article_data = {
+                    'url': str(article_data),
+                    'title': 'Unknown Title',
+                    'content': f"Error retrieving content: {str(e)}",
+                    'scraping_success': False
+                }
             return article_data
     
     def get_article_content(self, url):
